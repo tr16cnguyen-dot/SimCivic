@@ -2571,6 +2571,62 @@ window.fbGoLive = async function() {
       return;
     }
   }
+
+  // ── Full reset so new game always starts from clean defaults ──────────
+  data             = initData();
+  snapshots        = {};
+  roundHistory     = [];
+  politicalHistory = [];
+  roundNotes       = {};
+  roundDescs       = {
+    1: '8:15-8:45am — Plan, organize, record. Pick 1 nation card.',
+    2: '8:45-9:45am — Research opens, negotiation opens. Cross out one nation card. Building materials open.',
+    3: '9:45-10:30am — Trigger events, continue working.',
+    4: '10:30-12pm — Industry table opens. Finalize presentation, finish up products.',
+    5: '12-1pm — 🎤 PRESENTATION TIME!!! (10 mins. per team)'
+  };
+  maxAppliedRound  = 0;
+  currentRound     = 1;
+  viewingRound     = null;
+  cityRules        = buildDefaultCityRules();
+  globalEvents     = JSON.parse(JSON.stringify(GLOBAL_EVENTS));
+  cityEvents       = JSON.parse(JSON.stringify(CITY_EVENTS));
+  globalEnabled    = new Set(GLOBAL_EVENTS.map(e => e.id));
+  cityEnabledMap   = {};
+  CITIES.forEach(c => { cityEnabledMap[c.id] = new Set(CITY_EVENTS.filter(e=>e.cityId===c.id).map(e=>e.id)); });
+  draftPool        = [...DEFAULT_STUDENTS];
+  draftRosters     = initDraftRosters();
+  teacherNames     = ['Ms. Lippert', 'Ms. Jacobs', 'Ms. Truc', 'Ms. Katherine', 'Ms. Aniya'];
+  teacherAssign    = {};
+  roleAssignments  = {};
+  CITIES.forEach(c => { politicalRanks[c.id] = 50; });
+  savePoliticalRanks();
+  cityRelations    = {};
+  loadRelations(); saveRelations(); syncPoliticalFromRelations();
+  warState         = {}; activeWars = []; warImmuneRounds = {};
+  saveWarState();
+  powerTripState   = null;
+  window._powerTripBypass = false;
+  resourceTradeHappenedThisRound = false;
+  policyPicks      = {};
+  usedPolicyCards  = new Set();
+  CITIES.forEach(c => { policyPicks[c.id] = null; });
+  if (window._immunityUsed) window._immunityUsed = {};
+  savePolicyPicks();
+  Object.keys(POLICY_CARDS).forEach(cid => {
+    POLICY_CARDS[cid].forEach(card => { delete card._edited; delete card.selected; delete card.eliminated; });
+  });
+  cityCardPicks    = {};
+  _nationCardPhase = {};
+  tradeItemsA      = [{ resourceId: RESOURCES.find(r=>r.id!=='pollution')?.id||RESOURCES[0].id, amount:10 }];
+  tradeItemsB      = [];
+  window._summitIsActive = false;
+  window._summitUsedNations = new Set();
+  if (typeof _condAlertedKeys !== 'undefined') _condAlertedKeys.clear();
+  try { localStorage.removeItem(CUSTOM_POLICY_SK); } catch {}
+  try { localStorage.removeItem(CARD_PICKS_SK);    } catch {}
+  try { localStorage.removeItem(POL_HISTORY_SK);   } catch {}
+
   const code = _fbMakeCode();
   window._fb.code = code;
   window._fb.mode = 'host';
@@ -2759,30 +2815,73 @@ window.fbGoLive = async function() {
         label: `💰 Tax Maniac: Azure raised ${ev.targetName}'s trade tax ${ev.oldRate}% → ${ev.newRate}% (relations Azure ↔ ${ev.targetName} −8%)`
       });
       renderHistory && renderHistory();
+      // ── Host alert popup ─────────────────────────────────────────
+      var targetCity = CITIES.find(function(c){ return c.id === ev.targetNationId; });
+      _showHostEventAlert({
+        icon: '💰⚡',
+        title: 'TAX MANIAC ACTIVATED',
+        color: '#ef4444',
+        lines: [
+          'Azure Bay raised '+(targetCity?.name||ev.targetName||ev.targetNationId)+'\'s trade tax.',
+          'Old rate: '+(ev.oldRate??'?')+'%  →  New rate: '+ev.newRate+'%',
+          '−8% bilateral: Azure ↔ '+(targetCity?.name||ev.targetName),
+        ],
+      });
     }
 
     save();
     // Show popup on host screen
     _showPolicyCardUsedPopup(ev);
 
-    // If Ironvale has Villain Corp active and this is a deniable card from another nation, push a viewer-side offer
+    // If this is a people-trade card, auto-navigate to the people trade form
+    if (ev.peopleTradeCard && PEOPLE_TRADE_CARDS && PEOPLE_TRADE_CARDS[ev.cardId]) {
+      _autoOpenPeopleTradeForCard(ev);
+    }
+
+    // If Ironvale has Villain Corp active, offer the denial for ANY card from another nation
     var ironHasVillain = policyPicks['ironvale'] === 'ih-p4' && !usedPolicyCards.has('ih-p4');
-    var cardIsDeniable = !!(ev.cardIsRed || ev.peopleTradeCard || ev.taxManiac);
-    if (ironHasVillain && cardIsDeniable && ev.cityId !== 'ironvale' && _fbDB && window._fb && window._fb.code) {
+    if (ironHasVillain && ev.cityId !== 'ironvale' && _fbDB && window._fb && window._fb.code) {
       _fbDB.ref('games/' + window._fb.code + '/events/villainCorpAvailable').set({
-        ts:           Date.now(),
-        deniedCityId: ev.cityId,
-        deniedCityName: ev.cityName,
-        deniedCityIcon: ev.cityIcon,
+        ts:              Date.now(),
+        deniedCityId:    ev.cityId,
+        deniedCityName:  ev.cityName,
+        deniedCityIcon:  ev.cityIcon,
         deniedCityColor: ev.cityColor,
-        deniedCardId:   ev.cardId,
-        deniedCardName: ev.cardName,
+        deniedCardId:    ev.cardId,
+        deniedCardName:  ev.cardName,
+        deniedCardDesc:  ev.cardDesc || '',
+        deniedCardIsRed: !!ev.cardIsRed,
+        deniedCardIsRecurring: !!(POLICY_CARD_RULES[ev.cardId]),
+        deniedCardIsOneTime:   !!(ONE_TIME_APPLY_CARDS[ev.cardId]),
       }).catch(function(){});
     }
   });
 
 
-  // ── Villain Corp request from Ironvale viewer — host confirms and executes ──
+  // ── Power Trip confirmed by Azure — show host alert and sync state ──
+  var _lastPowerTripActiveTs = 0;
+  _fbDB.ref('games/'+code+'/events/powerTripActive').on('value', function(snap) {
+    var ev = snap.val();
+    if (!ev || ev.ts <= _lastPowerTripActiveTs) return;
+    if (ev.ts < _hostPolicyListenerStart) return;
+    _lastPowerTripActiveTs = ev.ts;
+
+    // Sync Power Trip state to host
+    powerTripState = { nationA: ev.nationA, nationB: ev.nationB, round: ev.round };
+
+    // Show host alert with the 2 chosen nations
+    _showHostEventAlert({
+      icon: '⚡🚫',
+      title: 'POWER TRIP ACTIVATED',
+      color: '#ef4444',
+      lines: [
+        'Azure Bay is intercepting trades for Round '+ev.round+':',
+        (ev.iconA||'')+'  '+(ev.nameA||ev.nationA)+'  &  '+(ev.iconB||'')+'  '+(ev.nameB||ev.nationB),
+        'Any trade involving either nation will require Azure\'s approval.',
+      ],
+    });
+    renderScoreboard && renderScoreboard();
+  });
   var _lastVCRequestTs = 0;
   _fbDB.ref('games/'+code+'/events/villainCorpRequest').on('value', function(snap) {
     const ev = snap.val();
@@ -2792,6 +2891,324 @@ window.fbGoLive = async function() {
     // Show host a confirmation popup before executing
     _showHostVillainCorpRequestPopup(ev);
   });
+
+// ── Host: Villain Corp confirmation popup ────────────────────────────────
+function _showHostVillainCorpRequestPopup(ev) {
+  var existing = document.getElementById('vcRequestPopup');
+  if (existing) existing.remove();
+  var deniedCity  = CITIES.find(function(c){ return c.id === ev.deniedCityId; });
+  var deniedColor = deniedCity ? deniedCity.color : '#ef4444';
+  var backdrop = document.createElement('div');
+  backdrop.id = 'vcRequestBackdrop';
+  backdrop.style.cssText = 'position:fixed;inset:0;z-index:9090;background:rgba(5,8,15,0.80);backdrop-filter:blur(8px);animation:egFadeIn 0.2s ease-out;';
+  document.body.appendChild(backdrop);
+  var div = document.createElement('div');
+  div.id = 'vcRequestPopup';
+  div.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9100;'
+    +'background:#0d1117;border:2px solid rgba(239,68,68,0.5);border-radius:16px;padding:26px 28px;'
+    +'text-align:center;min-width:340px;max-width:480px;width:92%;font-family:Sora,sans-serif;'
+    +'box-shadow:0 0 60px rgba(239,68,68,0.2);animation:egFadeIn 0.3s ease-out;';
+
+  var typeNote = ev.deniedCardIsOneTime
+    ? '⏺️ <strong style="color:#fbbf24;">One-time card</strong> — the resource change will be <strong>reverted</strong>.'
+    : ev.deniedCardIsRecurring
+    ? '🔄 <strong style="color:#fbbf24;">Recurring card</strong> — the per-round rule will be <strong>removed</strong>.'
+    : ev.deniedCardIsRed
+    ? '🔴 <strong style="color:#fbbf24;">Red card</strong> — people trade or special effect will be <strong>cancelled</strong>.'
+    : '📜 The card\'s effects will be <strong>cancelled and reversed</strong>.';
+
+  div.innerHTML = '<div style="font-size:2.5rem;margin-bottom:10px;">🦹</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.78rem;font-weight:900;color:#ef4444;letter-spacing:2px;margin-bottom:6px;">VILLAIN CORP ACTIVATED</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.45rem;color:rgba(255,255,255,0.3);letter-spacing:2px;margin-bottom:16px;">IRONVALE REQUESTS DENIAL</div>'
+    +'<div style="padding:12px 16px;border-radius:10px;border:1px solid '+deniedColor+'35;background:'+deniedColor+'08;margin-bottom:14px;text-align:left;">'
+      +'<div style="display:flex;align-items:center;gap:10px;">'
+        +'<span style="font-size:1.6rem;">'+(deniedCity?deniedCity.icon:'🏙️')+'</span>'
+        +'<div>'
+          +'<div style="font-family:Orbitron,sans-serif;font-size:0.6rem;font-weight:800;color:'+deniedColor+';">'+(ev.deniedCityName||ev.deniedCityId)+'</div>'
+          +'<div style="font-size:0.65rem;font-weight:700;color:#e2e8f0;margin-top:2px;">'+ev.deniedCardName+'</div>'
+          +'<div style="font-size:0.55rem;color:rgba(255,255,255,0.4);margin-top:1px;">'+(ev.deniedCardDesc||'')+'</div>'
+        +'</div>'
+      +'</div>'
+    +'</div>'
+    +'<div style="font-size:0.58rem;color:rgba(255,255,255,0.45);margin-bottom:16px;line-height:1.6;">'+typeNote+'</div>'
+    +'<div style="display:flex;gap:10px;">'
+      +'<button id="vcCancelBtn" style="'
+        +'flex:1;padding:10px;border-radius:8px;cursor:pointer;'
+        +'border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);'
+        +'color:rgba(255,255,255,0.45);font-family:Orbitron,sans-serif;font-size:0.55rem;font-weight:700;'
+        +'letter-spacing:1px;">✕ CANCEL</button>'
+      +'<button id="vcConfirmBtn" style="'
+        +'flex:2;padding:10px;border-radius:8px;cursor:pointer;'
+        +'border:2px solid rgba(239,68,68,0.55);background:rgba(239,68,68,0.14);color:#ef4444;'
+        +'font-family:Orbitron,sans-serif;font-size:0.6rem;font-weight:900;letter-spacing:1.5px;'
+        +'transition:all 0.15s;">🦹 CONFIRM DENIAL</button>'
+    +'</div>';
+  document.body.appendChild(div);
+  document.getElementById('vcCancelBtn').addEventListener('click', function(){ ['vcRequestPopup','vcRequestBackdrop'].forEach(function(id){ var e=document.getElementById(id); if(e)e.remove(); }); });
+  document.getElementById('vcConfirmBtn').addEventListener('click', function(){ _executeVillainCorpDenial(ev, true); });
+}
+
+// ── Host: Execute Villain Corp denial ────────────────────────────────────
+window._executeVillainCorpDenial = function(ev, confirmed) {
+  ['vcRequestPopup','vcRequestBackdrop'].forEach(function(id){ var e=document.getElementById(id); if(e)e.remove(); });
+  if (!confirmed) return;
+
+  var deniedCardId = ev.deniedCardId;
+  var deniedCityId = ev.deniedCityId;
+  var deniedCity   = CITIES.find(function(c){ return c.id === deniedCityId; });
+  var card         = (POLICY_CARDS[deniedCityId]||[]).find(function(c){ return c.id === deniedCardId; });
+
+  // Mark ih-p4 used — Villain Corp is consumed
+  usedPolicyCards.add('ih-p4');
+  // Also mark the denied card as used (it was voided, not enacted)
+  usedPolicyCards.add(deniedCardId);
+  // Remove denied card's policy pick
+  policyPicks[deniedCityId] = null;
+  savePolicyPicks();
+
+  var revertNote = '';
+
+  // ── Revert ONE-TIME resource change cards ────────────────────────────
+  if (ONE_TIME_APPLY_CARDS[deniedCardId]) {
+    // Snapshot exists from before the card was applied — revert by re-applying the inverse
+    var snap = snapshots[currentRound] || snapshots[maxAppliedRound];
+    if (snap && snap.data && snap.data[deniedCityId]) {
+      RESOURCES.forEach(function(res) {
+        if (snap.data[deniedCityId][res.id] !== undefined) {
+          var snappedVal = snap.data[deniedCityId][res.id].value;
+          var currentVal = safeGetVal(deniedCityId, res.id);
+          if (currentVal !== snappedVal) {
+            safeSetVal(deniedCityId, res.id, snappedVal);
+            revertNote += res.icon + ' ' + res.name + ': ' + currentVal + ' → ' + snappedVal + '  ';
+          }
+        }
+      });
+    }
+    revertNote = revertNote || '(resource change reversed)';
+  }
+
+  // ── Remove RECURRING rule added by this card ─────────────────────────
+  var removedRules = 0;
+  cityRules = cityRules.filter(function(r) {
+    var isCardRule = r.label && r.label.includes(card ? card.name : deniedCardId);
+    if (isCardRule) { removedRules++; return false; }
+    return true;
+  });
+  // Also filter by the standard 📜 label prefix used by POLICY_CARD_RULES
+  if (!removedRules) {
+    cityRules = cityRules.filter(function(r) {
+      if (r.city_id === deniedCityId && r.label && r.label.startsWith('📜')) {
+        // Check if it's from this card's round
+        removedRules++;
+        return false;
+      }
+      return true;
+    });
+  }
+  if (removedRules) revertNote = 'recurring rule removed';
+
+  // Apply −5% bilateral relations between Ironvale and the denied city
+  adjustRelation('ironvale', deniedCityId, -5);
+  saveRelations && saveRelations();
+  syncPoliticalFromRelations && syncPoliticalFromRelations();
+
+  save();
+  renderScoreboard();
+  renderHistory();
+  renderPolicyCardsSidebar && renderPolicyCardsSidebar();
+  renderRules && renderRules();
+
+  roundHistory.unshift({
+    round: -1, changes: [], icon: '🦹',
+    label: '🦹 Villain Corp: Ironvale denied ' + (deniedCity?deniedCity.name:deniedCityId) + '\'s "' + (card?card.name:deniedCardId) + '"'
+      + (revertNote?' — '+revertNote:'') + ' (Ironvale ↔ '+(deniedCity?deniedCity.name:deniedCityId)+' −5% relations)',
+  });
+  renderHistory();
+
+  // Push result to Firebase so viewer devices see popups
+  if (_fbDB && window._fb && window._fb.code) {
+    _fbDB.ref('games/'+window._fb.code+'/events/villainCorpDenied').set({
+      ts:            Date.now(),
+      deniedCityId,
+      deniedCityName:  ev.deniedCityName,
+      deniedCityIcon:  ev.deniedCityIcon,
+      deniedCityColor: ev.deniedCityColor,
+      deniedCardId,
+      deniedCardName:  ev.deniedCardName,
+      deniedCardDesc:  ev.deniedCardDesc || '',
+      revertNote,
+    }).catch(function(){});
+    _fbDB.ref('games/'+window._fb.code+'/events/villainCorpAvailable').remove().catch(function(){});
+    _fbDB.ref('games/'+window._fb.code+'/events/villainCorpRequest').remove().catch(function(){});
+  }
+
+  showToastMsg('🦹 Villain Corp: "' + (ev.deniedCardName||deniedCardId) + '" denied!');
+  playSuccess && playSuccess();
+
+  // ── Host alert popup for Villain Corp ─────────────────────────────
+  _showHostEventAlert({
+    icon: '🦹',
+    title: 'VILLAIN CORP EXECUTED',
+    color: '#ef4444',
+    lines: [
+      'Ironvale denied '+(deniedCity?.name||deniedCityId)+'\'s "'+ev.deniedCardName+'".',
+      revertNote || 'Card effects cancelled.',
+      '−5% bilateral: Ironvale ↔ '+(deniedCity?.name||deniedCityId),
+    ],
+  });
+};
+
+// ── Ironvale viewer: Villain Corp notification bar (non-blocking) ────────
+// The card already executed. This gives Ironvale a window to interrupt it.
+window._showIronvaleVillainCorpOffer = function(ev, code) {
+  var existing = document.getElementById('ironvaleVillainCorpOffer');
+  if (existing) existing.remove();
+
+  // Play subtle alert
+  try {
+    var ctx=new(window.AudioContext||window.webkitAudioContext)();
+    [[220,0],[280,0.15],[180,0.3]].forEach(function(p){
+      var o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);
+      o.type='sawtooth';o.frequency.value=p[0];var t=ctx.currentTime+p[1];
+      g.gain.setValueAtTime(0.1,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.18);o.start(t);o.stop(t+0.2);
+    });
+  } catch(e){}
+
+  var deniedColor = ev.deniedCityColor || '#ef4444';
+  var typeNote = ev.deniedCardIsOneTime
+    ? 'resource change will be reverted'
+    : ev.deniedCardIsRecurring
+    ? 'per-round rule will be removed'
+    : 'card effects will be cancelled';
+
+  // 60-second countdown before the offer expires
+  var TIMEOUT_MS = 60000;
+  var deadline   = Date.now() + TIMEOUT_MS;
+
+  var div = document.createElement('div');
+  div.id  = 'ironvaleVillainCorpOffer';
+  // Slide-in banner from the bottom
+  div.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:9300;'
+    +'max-width:480px;width:92%;font-family:Sora,sans-serif;'
+    +'background:linear-gradient(135deg,rgba(10,14,23,0.99),rgba(20,8,8,0.99));'
+    +'border:2px solid rgba(239,68,68,0.5);border-radius:14px;padding:14px 16px;'
+    +'box-shadow:0 0 40px rgba(239,68,68,0.25);animation:slamIn 0.35s cubic-bezier(0.34,1.56,0.64,1);';
+
+  div.innerHTML =
+    // Header row
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">'
+      +'<div style="display:flex;align-items:center;gap:8px;">'
+        +'<span style="font-size:1.3rem;">🦹</span>'
+        +'<div>'
+          +'<div style="font-family:Orbitron,sans-serif;font-size:0.58rem;font-weight:900;color:#ef4444;letter-spacing:1px;">VILLAIN CORP OPPORTUNITY</div>'
+          +'<div style="font-size:0.5rem;color:rgba(255,255,255,0.35);margin-top:1px;">'
+            +'<span style="color:'+deniedColor+';">'+(ev.deniedCityName||ev.deniedCityId)+'</span>'
+            +' used <strong style="color:#e2e8f0;">'+(ev.deniedCardName||ev.deniedCardId)+'</strong>'
+          +'</div>'
+        +'</div>'
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:6px;">'
+        +'<span id="vcCountdown" style="font-family:Orbitron,sans-serif;font-size:0.55rem;color:rgba(255,255,255,0.3);">60s</span>'
+        +'<button onclick="document.getElementById(\'ironvaleVillainCorpOffer\').remove()" style="'
+          +'padding:3px 8px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);'
+          +'background:transparent;color:rgba(255,255,255,0.3);font-size:0.6rem;cursor:pointer;">✕</button>'
+      +'</div>'
+    +'</div>'
+    // Description
+    +'<div style="font-size:0.58rem;color:rgba(255,255,255,0.5);line-height:1.6;margin-bottom:12px;">'
+      +'Using Villain Corp will deny this policy card ('+(typeNote)+') and cause a '
+      +'<strong style="color:#f87171;">−5% relations</strong> with '
+      +'<strong style="color:'+deniedColor+';">'+(ev.deniedCityName||ev.deniedCityId)+'</strong>. '
+      +'Your <strong style="color:#ef4444;">ih-p4</strong> card will be consumed.'
+    +'</div>'
+    // Use button
+    +'<button id="vcUseBtn" style="'
+      +'width:100%;padding:11px;border-radius:9px;cursor:pointer;'
+      +'border:2px solid rgba(239,68,68,0.6);background:rgba(239,68,68,0.15);color:#ef4444;'
+      +'font-family:Orbitron,sans-serif;font-size:0.65rem;font-weight:900;letter-spacing:1.5px;'
+      +'transition:all 0.15s;" '
+      +'onmouseover="this.style.background=\'rgba(239,68,68,0.28)\'" '
+      +'onmouseout="this.style.background=\'rgba(239,68,68,0.15)\'">🦹 USE VILLAIN CORP — DENY THIS CARD</button>';
+
+  document.body.appendChild(div);
+
+  // Countdown timer
+  var countdownEl = document.getElementById('vcCountdown');
+  var timerInterval = setInterval(function() {
+    var remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    if (countdownEl) countdownEl.textContent = remaining + 's';
+    if (remaining <= 0) {
+      clearInterval(timerInterval);
+      var offer = document.getElementById('ironvaleVillainCorpOffer');
+      if (offer) offer.remove();
+      // Clean up Firebase node so it doesn't re-trigger
+      if (_fbDB && window._fb && window._fb.code) {
+        _fbDB.ref('games/'+window._fb.code+'/events/villainCorpAvailable').remove().catch(function(){});
+      }
+    }
+  }, 1000);
+
+  // Use button
+  var useBtn = document.getElementById('vcUseBtn');
+  if (useBtn) {
+    useBtn.addEventListener('click', function() {
+      clearInterval(timerInterval);
+      div.remove();
+      // Apply -5% relations between Ironvale and the denied city immediately on viewer
+      if (typeof adjustRelation === 'function') {
+        adjustRelation('ironvale', ev.deniedCityId, -5);
+        saveRelations && saveRelations();
+      }
+      // Push villainCorpRequest to Firebase — host confirms and executes the denial
+      if (_fbDB && window._fb && window._fb.code) {
+        _fbDB.ref('games/'+window._fb.code+'/events/villainCorpRequest').set({
+          ts:              Date.now(),
+          deniedCityId:    ev.deniedCityId,
+          deniedCityName:  ev.deniedCityName,
+          deniedCityIcon:  ev.deniedCityIcon,
+          deniedCityColor: ev.deniedCityColor,
+          deniedCardId:    ev.deniedCardId,
+          deniedCardName:  ev.deniedCardName,
+          deniedCardDesc:  ev.deniedCardDesc || '',
+          deniedCardIsRed:       !!ev.deniedCardIsRed,
+          deniedCardIsRecurring: !!ev.deniedCardIsRecurring,
+          deniedCardIsOneTime:   !!ev.deniedCardIsOneTime,
+        }).catch(function(){});
+      }
+      showToastMsg && showToastMsg('🦹 Villain Corp activated — awaiting host confirmation...');
+    });
+  }
+};
+
+// ── Viewer: Villain Corp result popup (shown to Ironvale + denied nation) ─
+window._showViewerVillainCorpPopup = function(ev, role) {
+  var existing = document.getElementById('viewerVillainCorpPopup');
+  if (existing) existing.remove();
+  var isIronvale = role === 'ironvale';
+  var col  = isIronvale ? '#ef4444' : '#818cf8';
+  var icon = isIronvale ? '🦹' : '📜';
+  var title = isIronvale ? 'VILLAIN CORP SUCCESSFUL' : 'YOUR CARD WAS DENIED';
+  var subtitle = isIronvale
+    ? 'You denied ' + (ev.deniedCityName||ev.deniedCityId) + '\'s "' + ev.deniedCardName + '"'
+    : 'Ironvale\'s Villain Corp voided your "' + ev.deniedCardName + '"';
+
+  var div = document.createElement('div');
+  div.id = 'viewerVillainCorpPopup';
+  div.style.cssText = 'position:fixed;inset:0;z-index:9200;background:rgba(5,8,15,0.97);display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;backdrop-filter:blur(14px);animation:egFadeIn 0.35s ease-out;';
+  div.innerHTML = '<div style="max-width:400px;width:90%;text-align:center;padding:28px 24px;">'
+    +'<div style="font-size:3rem;margin-bottom:10px;filter:drop-shadow(0 0 20px '+col+'80);">'+icon+'</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.8rem;font-weight:900;color:'+col+';letter-spacing:3px;margin-bottom:6px;">'+title+'</div>'
+    +'<div style="font-size:0.65rem;color:rgba(255,255,255,0.5);margin-bottom:14px;line-height:1.6;">'+subtitle+'</div>'
+    +(ev.revertNote
+      ? '<div style="padding:9px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);font-size:0.58rem;color:rgba(255,200,80,0.7);margin-bottom:16px;">'+ev.revertNote+'</div>'
+      : '')
+    +'<button onclick="document.getElementById(\'viewerVillainCorpPopup\').remove()" style="'
+      +'padding:11px 30px;border-radius:10px;cursor:pointer;'
+      +'border:2px solid '+col+'50;background:'+col+'12;color:'+col+';'
+      +'font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:900;letter-spacing:2px;">✓ ACKNOWLEDGED</button>'
+  +'</div>';
+  document.body.appendChild(div);
+};
 
   // ── Policy trade proposals from viewer devices — show approval popup on host ──
   var _lastPolicyTradeProposalTs = 0;
@@ -3812,7 +4229,7 @@ function renderViewerPage() {
     : '';
 
   var relHtml = azureTaxSection
-    + cSection('rel-matrix', '🕸 NATION RELATIONS',
+    + cSection('rel-matrix', '🕸 BILATERAL NATION RELATIONS',
         '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:400px"><thead><tr>'+relHeader+'</tr></thead><tbody>'+relRows+'</tbody></table></div>')
     + cSection('rel-alliances', '🤝 '+(myCity?'YOUR ALLIANCES & AID':'ALL ALLIANCES & AID'),
         '<div style="display:flex;flex-direction:column;gap:6px">'+buildAllyHtml(myCity?myAllyRules:allyRules,'No active alliances')+'</div>')
@@ -4462,7 +4879,7 @@ function renderViewerPage() {
     +(myCity ? tabBtn('my-nation', myCity.icon, 'My Nation') : '')
     +tabBtn('other-nations', '🌍', 'Nations')
     +tabBtn('team', '👥', 'Teams')
-    +tabBtn('political', '🕸', 'Relations')
+    +tabBtn('political', '🕸', 'Bilateral Relations')
     +tabBtn('rules', '📋', 'Rules')
     +'</div>';
 
@@ -4920,8 +5337,134 @@ function _wsShowAllyChoicePopup(myNat, natA, natB, ws, code) {
   document.body.appendChild(div);
 }
 
-// ── Viewer: Use Policy Card button handler ───────────────────────────────
-window._fbViewerUsePolicyCard = function(cityId, cardId) {
+// ── Viewer: People Trade Picker Popup ────────────────────────────────────
+// Opens on the nation's device when they use a people-trade policy card.
+// Lets them select the target nation, then sends the choice to the host.
+window._showViewerPeopleTradePickerPopup = function(cityId, cardId, card, ptInfo) {
+  var existing = document.getElementById('viewerPeopleTradePickerPopup');
+  if (existing) existing.remove();
+
+  var myCity   = CITIES.find(function(c){ return c.id === cityId; });
+  var cityColor = myCity ? myCity.color : '#818cf8';
+
+  var roleList = (ptInfo.roles || []).map(function(r) {
+    var roleObj = (typeof ROLES !== 'undefined') ? ROLES.find(function(ro){ return ro.id === r; }) : null;
+    return roleObj ? roleObj.label : r;
+  }).join(', ');
+
+  var typeLabel = ptInfo.type === 'mayor-trade'          ? '🏛️ Mayor Trade'
+                : ptInfo.type === 'internal-role-change' ? '🔄 Internal Role Change'
+                : ptInfo.type === 'role-swap'            ? '🔀 Role Swap'
+                :                                          '👥 People Trade';
+
+  // Target nation options (exclude self, and for internal-role-change exclude all)
+  var isSameCity  = !!ptInfo.sameCity;
+  var nationOpts  = isSameCity ? '' : CITIES.filter(function(c){ return c.id !== cityId; })
+    .map(function(c){ return '<option value="'+c.id+'">'+c.icon+' '+c.name+'</option>'; }).join('');
+
+  var roleChips = (ptInfo.roles || []).map(function(r) {
+    var roleObj = (typeof ROLES !== 'undefined') ? ROLES.find(function(ro){ return ro.id === r; }) : null;
+    var label = roleObj ? roleObj.label : r;
+    return '<span style="display:inline-block;padding:3px 10px;border-radius:12px;'
+      +'background:rgba(129,140,248,0.14);border:1px solid rgba(129,140,248,0.35);'
+      +'font-family:Orbitron,sans-serif;font-size:0.5rem;font-weight:700;color:#818cf8;margin:2px;">'+label+'</span>';
+  }).join('');
+
+  var instructions = ptInfo.type === 'mayor-trade'
+    ? 'Select the nation you want to propose a Mayor Trade with.<br>If they refuse, they lose <strong style="color:#ef4444;">−20 Capital</strong>.'
+    : ptInfo.type === 'internal-role-change'
+    ? 'Pick a new <strong style="color:#c084fc;">'+roleList+'</strong> from your own team.'
+    : ptInfo.type === 'role-swap'
+    ? 'Select the nation you want to swap your <strong style="color:#c084fc;">'+roleList+'</strong> with.'
+    : 'Select the target nation for this people trade.';
+
+  var div = document.createElement('div');
+  div.id = 'viewerPeopleTradePickerPopup';
+  div.style.cssText = 'position:fixed;inset:0;z-index:9400;background:rgba(5,8,15,0.97);'
+    +'display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;'
+    +'backdrop-filter:blur(14px);animation:egFadeIn 0.3s ease-out;padding:20px;overflow-y:auto;';
+
+  div.innerHTML = '<div style="max-width:460px;width:100%;text-align:center;">'
+    // Header
+    +'<div style="display:inline-flex;align-items:center;gap:8px;padding:5px 16px;'
+      +'border-radius:20px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);'
+      +'font-family:Orbitron,sans-serif;font-size:0.48rem;font-weight:800;color:#ef4444;'
+      +'letter-spacing:2px;margin-bottom:14px;">&#x26a0;&#xfe0f; ACTION REQUIRED</div>'
+    +'<div style="font-size:2.2rem;margin-bottom:8px;">👥</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.82rem;font-weight:900;color:#fbbf24;letter-spacing:3px;margin-bottom:4px;">'+typeLabel.toUpperCase()+'</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.45rem;color:rgba(255,255,255,0.3);letter-spacing:2px;margin-bottom:18px;">POLICY CARD ACTIVATED</div>'
+    // Card info
+    +'<div style="padding:14px 16px;border-radius:12px;border:2px solid '+cityColor+'35;background:'+cityColor+'0a;margin-bottom:14px;text-align:left;">'
+      +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">'
+        +'<div style="font-size:1.6rem;">'+(myCity ? myCity.icon : '🏙️')+'</div>'
+        +'<div>'
+          +'<div style="font-family:Orbitron,sans-serif;font-size:0.6rem;font-weight:900;color:'+cityColor+';">'+card.name+'</div>'
+          +'<div style="font-size:0.55rem;color:rgba(255,255,255,0.45);margin-top:2px;">'+card.desc+'</div>'
+        +'</div>'
+      +'</div>'
+      +(roleChips ? '<div style="margin-top:6px;"><span style="font-size:0.5rem;color:rgba(255,255,255,0.3);font-family:Orbitron,sans-serif;letter-spacing:1px;margin-right:6px;">ROLES:</span>'+roleChips+'</div>' : '')
+    +'</div>'
+    // Instructions
+    +'<div style="padding:11px 14px;border-radius:9px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);'
+      +'margin-bottom:16px;font-size:0.6rem;color:rgba(255,255,255,0.5);line-height:1.7;text-align:left;">'+instructions+'</div>'
+    // Target selector (skip for internal changes)
+    +(isSameCity ? '' :
+      '<div style="margin-bottom:16px;text-align:left;">'
+        +'<div style="font-family:Orbitron,sans-serif;font-size:0.5rem;font-weight:700;color:rgba(255,255,255,0.35);letter-spacing:1px;margin-bottom:6px;">TARGET NATION</div>'
+        +'<select id="vptp_targetNation" style="width:100%;padding:10px 12px;border-radius:8px;'
+          +'border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);'
+          +'color:#e2e8f0;font-size:0.68rem;cursor:pointer;">'+nationOpts+'</select>'
+      +'</div>')
+    // Buttons
+    +'<div style="display:flex;gap:10px;">'
+      +'<button onclick="document.getElementById(\'viewerPeopleTradePickerPopup\').remove()" style="'
+        +'flex:1;padding:11px;border-radius:9px;cursor:pointer;'
+        +'border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);'
+        +'color:rgba(255,255,255,0.4);font-family:Orbitron,sans-serif;font-size:0.58rem;font-weight:700;">DISMISS</button>'
+      +'<button id="vptpConfirmBtn" style="'
+        +'flex:2;padding:11px;border-radius:9px;cursor:pointer;'
+        +'border:2px solid rgba(251,191,36,0.55);background:rgba(251,191,36,0.14);color:#fbbf24;'
+        +'font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:900;letter-spacing:1.5px;">&#x1f465; SEND TO HOST</button>'
+    +'</div>'
+  +'</div>';
+  document.body.appendChild(div);
+
+  var confirmBtn = document.getElementById('vptpConfirmBtn');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', function() {
+      var targetSel   = document.getElementById('vptp_targetNation');
+      var targetId    = targetSel ? targetSel.value : cityId;
+      var targetCity  = CITIES.find(function(c){ return c.id === targetId; });
+      div.remove();
+
+      // Push to Firebase so host sees it and opens the people trade form
+      if (_fbDB && window._fb && window._fb.code) {
+        _fbDB.ref('games/'+window._fb.code+'/events/policyCardUsed').set({
+          ts:              Date.now(),
+          cardId:          cardId,
+          cardName:        card.name,
+          cardDesc:        card.desc,
+          cityId:          cityId,
+          cityName:        myCity ? myCity.name  : cityId,
+          cityIcon:        myCity ? myCity.icon  : '🏙️',
+          cityColor:       myCity ? myCity.color : cityColor,
+          source:          'viewer',
+          cardIsRed:       !!card.red,
+          peopleTradeCard: true,
+          peopleTradeType: ptInfo.type,
+          peopleTradeRoles:ptInfo.roles,
+          peopleTradeDesc: ptInfo.desc,
+          targetId:        targetId,
+          targetName:      targetCity ? targetCity.name : targetId,
+          targetIcon:      targetCity ? targetCity.icon : '🏙️',
+          targetColor:     targetCity ? targetCity.color : '#818cf8',
+        }).catch(function(){});
+      }
+      showToastMsg && showToastMsg('👥 Trade request sent to host — waiting for confirmation.');
+    });
+  }
+};
+window._fbViewerUsePolicyCard = function(cityId, cardId, skipPush) {
   if (!cardId || !cityId) return;
   if (usedPolicyCards.has(cardId)) {
     showToastMsg && showToastMsg('⚠️ This card has already been used.');
@@ -4930,6 +5473,47 @@ window._fbViewerUsePolicyCard = function(cityId, cardId) {
   var city = CITIES.find(function(c){ return c.id === cityId; });
   var card = city ? (POLICY_CARDS[cityId]||[]).find(function(c){ return c.id === cardId; }) : null;
   if (!card) return;
+
+  // Power Trip — open the nation picker directly on Azure's device instead of generic popup
+  if (cardId === 'ab-p4') {
+    // Mark used locally so the button greys out
+    usedPolicyCards.add(cardId);
+    savePolicyPicks && savePolicyPicks();
+    renderViewerPage && renderViewerPage();
+    // Push policyCardUsed first so host knows the card was activated
+    if (!skipPush && _fbDB && window._fb && window._fb.code) {
+      _fbDB.ref('games/'+window._fb.code+'/events/policyCardUsed').set({
+        ts: Date.now(), cardId: cardId, cardName: card.name, cardDesc: card.desc,
+        cityId: cityId, cityName: city.name, cityIcon: city.icon, cityColor: city.color,
+        source: 'viewer', cardIsRed: true,
+      }).catch(function(){});
+    }
+    // Open the nation picker on this device (viewer is Azure)
+    openPowerTripPicker && openPowerTripPicker(cardId);
+    return;
+  }
+
+  // People-trade cards — open the trade picker popup directly on this nation's device
+  var ptInfo2 = (typeof PEOPLE_TRADE_CARDS !== 'undefined') && PEOPLE_TRADE_CARDS[cardId];
+  if (ptInfo2) {
+    // Mark used locally
+    usedPolicyCards.add(cardId);
+    savePolicyPicks && savePolicyPicks();
+    renderViewerPage && renderViewerPage();
+    // Push policyCardUsed to Firebase so host is notified
+    if (!skipPush && _fbDB && window._fb && window._fb.code) {
+      _fbDB.ref('games/'+window._fb.code+'/events/policyCardUsed').set({
+        ts: Date.now(), cardId: cardId, cardName: card.name, cardDesc: card.desc,
+        cityId: cityId, cityName: city.name, cityIcon: city.icon, cityColor: city.color,
+        source: 'viewer', cardIsRed: !!card.red,
+        peopleTradeCard: true, peopleTradeType: ptInfo2.type,
+        peopleTradeRoles: ptInfo2.roles, peopleTradeDesc: ptInfo2.desc,
+      }).catch(function(){});
+    }
+    // Open the people trade picker popup on this device
+    _showViewerPeopleTradePickerPopup(cityId, cardId, card, ptInfo2);
+    return;
+  }
 
   // Mark used immediately on this device so the button greys out right away
   usedPolicyCards.add(cardId);
@@ -4940,6 +5524,27 @@ window._fbViewerUsePolicyCard = function(cityId, cardId) {
   var existing = document.getElementById('viewerPolicyActivated');
   if (existing) existing.remove();
   var col = card.red ? '#ef4444' : '#818cf8';
+
+  // Era of Expenses — show specific cost breakdown
+  var costHtml = '';
+  if (cardId === 'sc-p4') {
+    costHtml = '<div style="margin:12px 0;padding:11px 14px;border-radius:9px;'
+      +'background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.3);text-align:left;">'
+      +'<div style="font-family:Orbitron,sans-serif;font-size:0.46rem;font-weight:800;color:#ef4444;letter-spacing:1.5px;margin-bottom:7px;">&#x26a0;&#xfe0f; ACTIVATION COSTS</div>'
+      +'<div style="display:flex;flex-direction:column;gap:5px;">'
+        +'<div style="font-size:0.6rem;color:#f87171;">&#x1f4b0; <strong>&#x2212;10 Capital</strong> paid immediately</div>'
+        +'<div style="font-size:0.6rem;color:#f87171;">&#x1f3db;&#xfe0f; <strong>&#x2212;5% Political Rating</strong> (red card penalty)</div>'
+        +'<div style="font-size:0.6rem;color:#f87171;">&#x1f3db;&#xfe0f; <strong>&#x2212;3% Political Rating</strong> (activation cost)</div>'
+        +'<div style="font-size:0.55rem;color:rgba(245,158,11,0.8);margin-top:4px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.06);">&#x26a1; All other nations now pay <strong>2 Capital/min</strong> for online research</div>'
+      +'</div>'
+    +'</div>';
+  }
+
+  var isOngoing2 = (typeof ONGOING_POLICY_CARDS !== 'undefined' && ONGOING_POLICY_CARDS.has(cardId));
+  var statusBadgeHtml = isOngoing2
+    ? '<div style="padding:7px 14px;border-radius:7px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.3);font-family:Orbitron,sans-serif;font-size:0.45rem;font-weight:700;color:#10b981;letter-spacing:1px;margin-bottom:18px;">&#x25cf; ACTIVE &#x2014; APPLIES EVERY ROUND (see Rules tab)</div>'
+    : '<div style="padding:7px 14px;border-radius:7px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);font-family:Orbitron,sans-serif;font-size:0.45rem;font-weight:700;color:rgba(239,68,68,0.7);letter-spacing:1px;margin-bottom:18px;">CARD CANNOT BE USED AGAIN</div>';
+
   var popup = document.createElement('div');
   popup.id = 'viewerPolicyActivated';
   popup.style.cssText = 'position:fixed;inset:0;z-index:9200;background:rgba(5,8,15,0.97);display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;backdrop-filter:blur(12px);animation:egFadeIn 0.3s ease-out;';
@@ -4947,25 +5552,32 @@ window._fbViewerUsePolicyCard = function(cityId, cardId) {
     +'<div style="font-size:2.8rem;margin-bottom:10px;filter:drop-shadow(0 0 18px '+col+'80);">&#x1f4dc;</div>'
     +'<div style="font-family:Orbitron,sans-serif;font-size:0.8rem;font-weight:900;color:'+col+';letter-spacing:3px;margin-bottom:10px;">POLICY CARD ACTIVATED</div>'
     +'<div style="font-size:0.75rem;font-weight:700;color:#e2e8f0;margin-bottom:6px;">'+card.name+'</div>'
-    +'<div style="font-size:0.6rem;color:rgba(255,255,255,0.45);line-height:1.6;margin-bottom:14px;">'+card.desc+'</div>'
-    +'<div style="padding:7px 14px;border-radius:7px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);font-family:Orbitron,sans-serif;font-size:0.45rem;font-weight:700;color:rgba(239,68,68,0.7);letter-spacing:1px;margin-bottom:18px;">CARD CANNOT BE USED AGAIN</div>'
+    +'<div style="font-size:0.6rem;color:rgba(255,255,255,0.45);line-height:1.6;margin-bottom:6px;">'+card.desc+'</div>'
+    + costHtml
+    + statusBadgeHtml
     +'<button onclick="document.getElementById(\'viewerPolicyActivated\').remove()" style="padding:10px 28px;border-radius:9px;border:2px solid '+col+'50;background:'+col+'12;color:'+col+';font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:900;letter-spacing:1px;cursor:pointer;">&#x2713; GOT IT</button>'
     +'</div>';
   document.body.appendChild(popup);
   setTimeout(function(){ var e=document.getElementById('viewerPolicyActivated'); if(e)e.remove(); }, 10000);
 
   // Push to Firebase — host listener marks it used and shows the host-side popup
-  if (_fbDB && window._fb && window._fb.code) {
+  if (!skipPush && _fbDB && window._fb && window._fb.code) {
+    var ptInfo = (typeof PEOPLE_TRADE_CARDS !== 'undefined') && PEOPLE_TRADE_CARDS[cardId];
     _fbDB.ref('games/'+window._fb.code+'/events/policyCardUsed').set({
-      ts:        Date.now(),
-      cardId:    cardId,
-      cardName:  card.name,
-      cityId:    cityId,
-      cityName:  city ? city.name  : cityId,
-      cityIcon:  city ? city.icon  : '&#x1f3d9;',
-      cityColor: city ? city.color : '#818cf8',
-      source:    'viewer',
-      cardIsRed: !!card.red,
+      ts:              Date.now(),
+      cardId:          cardId,
+      cardName:        card.name,
+      cardDesc:        card.desc,
+      cityId:          cityId,
+      cityName:        city ? city.name  : cityId,
+      cityIcon:        city ? city.icon  : '&#x1f3d9;',
+      cityColor:       city ? city.color : '#818cf8',
+      source:          'viewer',
+      cardIsRed:       !!card.red,
+      peopleTradeCard: !!ptInfo,
+      peopleTradeType: ptInfo ? ptInfo.type  : null,
+      peopleTradeRoles:ptInfo ? ptInfo.roles : null,
+      peopleTradeDesc: ptInfo ? ptInfo.desc  : null,
     }).catch(function() {
       showToastMsg && showToastMsg('&#x26a0;&#xfe0f; Could not reach host — try again.');
     });
@@ -5411,10 +6023,15 @@ window._wsEscape = function() {
     var ev = snap.val();
     if (!ev || ev.ts < _joinedAt || ev.ts <= _lastPolicyUseTs) return;
     _lastPolicyUseTs = ev.ts;
+    // Mark used on this device and re-render so Rules tab and policy picker update
     usedPolicyCards.add(ev.cardId);
     renderViewerPage && renderViewerPage();
     if (ev.source === 'viewer' && window._fb.nation !== ev.cityId) {
       showToastMsg('📜 '+ev.cityIcon+' '+ev.cityName+' used their Policy Card: '+ev.cardName);
+    }
+    // For ongoing cards pushed by host-auto, also show activated popup on the owning nation's device
+    if (ev.isOngoing && ev.cityId && window._fb.nation === ev.cityId) {
+      window._fbViewerUsePolicyCard && window._fbViewerUsePolicyCard(ev.cityId, ev.cardId, true);
     }
   });
 
@@ -5452,7 +6069,17 @@ window._wsEscape = function() {
     _showIronvaleVillainCorpOffer(ev, code);
   });
 
-  // ── Mayor Trade Offer — shown on target nation device to accept or refuse ──
+  // ── Power Trip denied — notify involved nations ──────────────────────
+  var _lastPowerTripDeniedTs = 0;
+  _fbDB.ref('games/'+code+'/events/powerTripDenied').on('value', function(snap) {
+    var ev = snap.val();
+    if (!ev || ev.ts < _joinedAt || ev.ts <= _lastPowerTripDeniedTs) return;
+    _lastPowerTripDeniedTs = ev.ts;
+    var myNation = window._fb.nation;
+    if (myNation === ev.fromId || myNation === ev.toId) {
+      showToastMsg && showToastMsg('⚡ Azure\'s Power Trip denied your trade with '+(myNation===ev.fromId?ev.toName:ev.fromName)+'!');
+    }
+  });
   var _lastMayorTradeOfferTs = 0;
   _fbDB.ref('games/'+code+'/events/mayorTradeOffer').on('value', function(snap) {
     var ev = snap.val();
@@ -8163,7 +8790,7 @@ window.fbToggleViewers = function() {
       <div class="section-header" onclick="toggleSection('relationsMatrixBody')" style="cursor:pointer;">
         <div class="section-header-left">
           <span class="section-icon">🕸️</span>
-          <span class="section-title" style="color:#c084fc;">Nation Relations</span>
+          <span class="section-title" style="color:#c084fc;">Bilateral Nation Relations</span>
           <span class="section-badge" style="background:rgba(168,85,247,0.15);color:#c084fc;border:1px solid rgba(168,85,247,0.3);">POLITICAL MATRIX</span>
         </div>
         <span class="section-chevron open" id="relationsMatrixBodyChevron">▼</span>
@@ -10136,7 +10763,292 @@ function adjustTechTaxMinutes(delta) {
   updateTechTaxPreview();
 }
 
-// Returns 1 normally; 2 if Synapse's "Era of Expenses" (sc-p4) is active
+// ── Power Trip (ab-p4) state ─────────────────────────────────────────────
+// Stores which 2 nations are blocked and which round it was activated
+let powerTripState = null; // { nationA, nationB, round } or null
+
+function isPowerTripBlocking(cityId) {
+  if (!powerTripState || powerTripState.round !== currentRound) return false;
+  return cityId === powerTripState.nationA || cityId === powerTripState.nationB;
+}
+
+function openPowerTripPicker(cardId) {
+  // Show Azure a picker to choose 2 nations (not Azure itself)
+  var existing = document.getElementById('powerTripPickerModal');
+  if (existing) existing.remove();
+
+  var options = CITIES.filter(function(c){ return c.id !== 'azure-bay'; });
+
+  var div = document.createElement('div');
+  div.id = 'powerTripPickerModal';
+  div.style.cssText = 'position:fixed;inset:0;z-index:9400;background:rgba(5,8,15,0.97);'
+    +'display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;'
+    +'backdrop-filter:blur(14px);animation:egFadeIn 0.3s ease-out;';
+
+  var cityOpts = options.map(function(c){
+    return '<option value="'+c.id+'">'+c.icon+' '+c.name+'</option>';
+  }).join('');
+  var cityOpts2 = options.map(function(c){
+    return '<option value="'+c.id+'">'+c.icon+' '+c.name+'</option>';
+  }).join('');
+
+  div.innerHTML = '<div style="max-width:440px;width:90%;text-align:center;padding:28px 24px;">'
+    +'<div style="font-size:2.4rem;margin-bottom:10px;">⚡</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.82rem;font-weight:900;color:#ef4444;letter-spacing:3px;margin-bottom:4px;">POWER TRIP ACTIVATED</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.45rem;color:rgba(255,255,255,0.3);letter-spacing:2px;margin-bottom:20px;">SELECT 2 NATIONS TO BLOCK TRADES FOR ROUND '+currentRound+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;">'
+      +'<div style="text-align:left;">'
+        +'<div style="font-family:Orbitron,sans-serif;font-size:0.46rem;color:rgba(255,255,255,0.35);letter-spacing:1px;margin-bottom:5px;">NATION 1</div>'
+        +'<select id="ptNationA" style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:#e2e8f0;font-size:0.66rem;cursor:pointer;">'
+          +cityOpts
+        +'</select>'
+      +'</div>'
+      +'<div style="text-align:left;">'
+        +'<div style="font-family:Orbitron,sans-serif;font-size:0.46rem;color:rgba(255,255,255,0.35);letter-spacing:1px;margin-bottom:5px;">NATION 2</div>'
+        +'<select id="ptNationB" style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:#e2e8f0;font-size:0.66rem;cursor:pointer;">'
+          +cityOpts2
+        +'</select>'
+      +'</div>'
+    +'</div>'
+    +'<div style="font-size:0.57rem;color:rgba(255,255,255,0.4);line-height:1.7;margin-bottom:20px;padding:10px 14px;border-radius:9px;background:rgba(239,68,68,0.05);border:1px solid rgba(239,68,68,0.15);">'
+      +'Any trade involving <strong style="color:#fca5a5;">either</strong> nation will be intercepted and sent to Azure for approval this round.<br>'
+      +'Denying a trade costs <strong style="color:#ef4444;">−2% bilateral relations</strong> with that nation.'
+    +'</div>'
+    +'<div style="display:flex;gap:10px;">'
+      +'<button onclick="document.getElementById(\'powerTripPickerModal\').remove()" style="'
+        +'flex:1;padding:10px;border-radius:9px;cursor:pointer;border:1px solid rgba(255,255,255,0.12);'
+        +'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.4);font-family:Orbitron,sans-serif;'
+        +'font-size:0.58rem;font-weight:700;letter-spacing:1px;">CANCEL</button>'
+      +'<button id="ptConfirmBtn" style="'
+        +'flex:2;padding:10px;border-radius:9px;cursor:pointer;border:2px solid rgba(239,68,68,0.6);'
+        +'background:rgba(239,68,68,0.15);color:#ef4444;font-family:Orbitron,sans-serif;'
+        +'font-size:0.65rem;font-weight:900;letter-spacing:1.5px;">⚡ ACTIVATE</button>'
+    +'</div>'
+  +'</div>';
+  document.body.appendChild(div);
+
+  // Default Nation B to second option so they're different
+  var selB = document.getElementById('ptNationB');
+  if (selB && selB.options.length > 1) selB.selectedIndex = 1;
+
+  document.getElementById('ptConfirmBtn').addEventListener('click', function() {
+    var nA = document.getElementById('ptNationA').value;
+    var nB = document.getElementById('ptNationB').value;
+    if (nA === nB) { showToastMsg('⚠️ Select 2 different nations.'); return; }
+    div.remove();
+    _activatePowerTrip(nA, nB, cardId);
+  });
+}
+
+function _activatePowerTrip(nationA, nationB, cardId) {
+  powerTripState = { nationA, nationB, round: currentRound };
+  var cityA = CITIES.find(function(c){ return c.id === nationA; });
+  var cityB = CITIES.find(function(c){ return c.id === nationB; });
+
+  markPolicyCardUsed(cardId);
+  save();
+  renderScoreboard();
+  renderPolicyPickerGrid();
+  renderHistory && renderHistory();
+
+  roundHistory.unshift({ round: -1, changes: [], icon: '⚡',
+    label: '⚡ Power Trip (Round '+currentRound+'): Azure is intercepting trades involving '+(cityA?.name||nationA)+' & '+(cityB?.name||nationB) });
+  renderHistory();
+
+  // Push to Firebase so all devices know Power Trip is active
+  if (_fbDB && window._fb && window._fb.code) {
+    _fbDB.ref('games/'+window._fb.code+'/events/powerTripActive').set({
+      ts: Date.now(), round: currentRound,
+      nationA, nationB,
+      nameA: cityA?.name, nameB: cityB?.name,
+      iconA: cityA?.icon, iconB: cityB?.icon,
+      colorA: cityA?.color, colorB: cityB?.color,
+    }).catch(function(){});
+  }
+
+  showToastMsg('⚡ Power Trip active for Round '+currentRound+': intercepting trades for '+(cityA?.name||nationA)+' & '+(cityB?.name||nationB));
+  playSuccess && playSuccess();
+}
+
+// ── Power Trip trade intercept — called from executeTrade before applying ─
+function _checkPowerTripIntercept(fromId, toId, tradePayloadFn) {
+  if (!powerTripState || powerTripState.round !== currentRound) return false;
+  if (fromId === 'azure-bay' || toId === 'azure-bay') return false; // Azure's own trades not blocked
+  if (!isPowerTripBlocking(fromId) && !isPowerTripBlocking(toId)) return false;
+
+  // Build a preview of the trade for the intercept popup
+  var payload = tradePayloadFn();
+  _showPowerTripInterceptPopup(fromId, toId, payload);
+  return true; // intercepted — don't execute yet
+}
+
+function _showPowerTripInterceptPopup(fromId, toId, payload) {
+  var existing = document.getElementById('powerTripInterceptPopup');
+  if (existing) existing.remove();
+
+  var fromCity = CITIES.find(function(c){ return c.id === fromId; });
+  var toCity   = CITIES.find(function(c){ return c.id === toId; });
+
+  // Build trade line items
+  var itemsHtml = (payload.itemsA||[]).map(function(it){
+    var res = RESOURCES.find(function(r){ return r.id === it.resourceId; });
+    return '<div style="font-size:0.58rem;color:#e2e8f0;">'+
+      (fromCity?.icon||'')+'→'+(toCity?.icon||'')+' '+(res?.icon||'')+(res?.name||it.resourceId)+': <strong>'+it.amount+'</strong></div>';
+  }).join('')
+  + (payload.itemsB||[]).map(function(it){
+    var res = RESOURCES.find(function(r){ return r.id === it.resourceId; });
+    return '<div style="font-size:0.58rem;color:#e2e8f0;">'+
+      (toCity?.icon||'')+'→'+(fromCity?.icon||'')+' '+(res?.icon||'')+(res?.name||it.resourceId)+': <strong>'+it.amount+'</strong></div>';
+  }).join('');
+
+  var div = document.createElement('div');
+  div.id = 'powerTripInterceptPopup';
+  div.style.cssText = 'position:fixed;inset:0;z-index:9500;background:rgba(5,8,15,0.97);'
+    +'display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;'
+    +'backdrop-filter:blur(14px);animation:egFadeIn 0.3s ease-out;';
+  div.innerHTML = '<div style="max-width:460px;width:90%;text-align:center;padding:26px 24px;">'
+    +'<div style="font-size:2.2rem;margin-bottom:8px;">⚡🚫</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.78rem;font-weight:900;color:#ef4444;letter-spacing:3px;margin-bottom:4px;">POWER TRIP INTERCEPT</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.44rem;color:rgba(255,255,255,0.3);letter-spacing:2px;margin-bottom:16px;">TRADE REQUIRES AZURE APPROVAL — ROUND '+currentRound+'</div>'
+    // Involved nations
+    +'<div style="display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:14px;">'
+      +'<div style="text-align:center;">'
+        +'<div style="font-size:1.8rem;">'+(fromCity?.icon||'🏙️')+'</div>'
+        +'<div style="font-family:Orbitron,sans-serif;font-size:0.52rem;font-weight:700;color:'+(fromCity?.color||'#fff')+';">'+(fromCity?.name||fromId)+'</div>'
+      +'</div>'
+      +'<div style="font-size:1.2rem;color:rgba(255,255,255,0.2);">⇄</div>'
+      +'<div style="text-align:center;">'
+        +'<div style="font-size:1.8rem;">'+(toCity?.icon||'🏙️')+'</div>'
+        +'<div style="font-family:Orbitron,sans-serif;font-size:0.52rem;font-weight:700;color:'+(toCity?.color||'#fff')+';">'+(toCity?.name||toId)+'</div>'
+      +'</div>'
+    +'</div>'
+    // Trade items
+    +'<div style="padding:10px 14px;border-radius:9px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);text-align:left;margin-bottom:16px;">'
+      +'<div style="font-family:Orbitron,sans-serif;font-size:0.44rem;color:rgba(255,255,255,0.3);letter-spacing:1px;margin-bottom:7px;">TRADE ITEMS</div>'
+      +(itemsHtml || '<div style="font-size:0.58rem;color:rgba(255,255,255,0.3);">No items listed</div>')
+    +'</div>'
+    +'<div style="font-size:0.55rem;color:rgba(255,255,255,0.35);margin-bottom:18px;line-height:1.6;">'
+      +'Denying will cause <strong style="color:#ef4444;">−2% bilateral relations</strong> with the involved nation(s).'
+    +'</div>'
+    +'<div style="display:flex;gap:10px;">'
+      +'<button id="ptDenyTradeBtn" style="'
+        +'flex:1;padding:11px;border-radius:9px;cursor:pointer;'
+        +'border:2px solid rgba(239,68,68,0.55);background:rgba(239,68,68,0.12);color:#ef4444;'
+        +'font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:900;letter-spacing:1px;">🚫 DENY</button>'
+      +'<button id="ptAllowTradeBtn" style="'
+        +'flex:1;padding:11px;border-radius:9px;cursor:pointer;'
+        +'border:2px solid rgba(16,185,129,0.55);background:rgba(16,185,129,0.12);color:#10b981;'
+        +'font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:900;letter-spacing:1px;">✓ ALLOW</button>'
+    +'</div>'
+  +'</div>';
+  document.body.appendChild(div);
+
+  document.getElementById('ptDenyTradeBtn').addEventListener('click', function() {
+    div.remove();
+    // −2% bilateral with each blocked nation involved
+    if (isPowerTripBlocking(fromId)) { adjustRelation('azure-bay', fromId, -2); }
+    if (isPowerTripBlocking(toId))   { adjustRelation('azure-bay', toId,   -2); }
+    saveRelations && saveRelations();
+    syncPoliticalFromRelations && syncPoliticalFromRelations();
+    roundHistory.unshift({ round:-1, changes:[], icon:'⚡',
+      label:'⚡ Power Trip: Azure DENIED trade between '+(fromCity?.name||fromId)+' & '+(toCity?.name||toId)+' (−2% bilateral each)' });
+    renderHistory && renderHistory();
+    renderScoreboard && renderScoreboard();
+
+    // ── Host alert popup for Power Trip denial ──────────────────────
+    _showHostEventAlert({
+      icon: '⚡🚫',
+      title: 'POWER TRIP — TRADE DENIED',
+      color: '#ef4444',
+      lines: [
+        (fromCity?.icon||'')+(fromCity?.name||fromId)+' ⇄ '+(toCity?.icon||'')+(toCity?.name||toId),
+        'Azure Bay denied this trade.',
+        '−2% bilateral relations applied.',
+      ],
+    });
+
+    // Push denial event to Firebase so involved nations see a notification
+    if (_fbDB && window._fb && window._fb.code) {
+      _fbDB.ref('games/'+window._fb.code+'/events/powerTripDenied').set({
+        ts: Date.now(), fromId, toId,
+        fromName: fromCity?.name, toName: toCity?.name,
+        fromIcon: fromCity?.icon, toIcon: toCity?.icon,
+      }).catch(function(){});
+    }
+    showToastMsg('⚡ Power Trip: Trade DENIED — −2% relations applied.');
+  });
+
+  document.getElementById('ptAllowTradeBtn').addEventListener('click', function() {
+    div.remove();
+    // Execute the trade normally
+    _executeTradeDirect(payload);
+    showToastMsg('✓ Power Trip: Trade ALLOWED.');
+  });
+}
+
+// Executes a pre-built trade payload directly (used after Power Trip allows it)
+function _executeTradeDirect(payload) {
+  if (!payload) return;
+  // Re-invoke executeTrade with a flag to skip Power Trip check
+  window._powerTripBypass = true;
+  executeTrade();
+  window._powerTripBypass = false;
+}
+
+
+// ── Host event alert popup — branded notification for big host-side events ─
+function _showHostEventAlert(opts) {
+  var existing = document.getElementById('hostEventAlertPopup');
+  if (existing) existing.remove();
+  var col   = opts.color || '#f59e0b';
+  var icon  = opts.icon  || '⚡';
+  var title = opts.title || 'EVENT';
+  var lines = opts.lines || [];
+
+  var div = document.createElement('div');
+  div.id = 'hostEventAlertPopup';
+  div.style.cssText = 'position:fixed;bottom:90px;right:24px;z-index:9100;max-width:340px;width:92%;'
+    +'font-family:Sora,sans-serif;background:linear-gradient(135deg,rgba(10,14,23,0.99),rgba(8,12,20,0.99));'
+    +'border:2px solid '+col+'60;border-radius:14px;padding:16px 18px;'
+    +'box-shadow:0 0 40px '+col+'25;animation:slamIn 0.35s cubic-bezier(0.34,1.56,0.64,1);';
+
+  div.innerHTML =
+    '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px;">'
+      +'<div style="display:flex;align-items:center;gap:10px;">'
+        +'<span style="font-size:1.6rem;line-height:1;filter:drop-shadow(0 0 10px '+col+'80);">'+icon+'</span>'
+        +'<div>'
+          +'<div style="font-family:Orbitron,sans-serif;font-size:0.58rem;font-weight:900;color:'+col+';letter-spacing:1.5px;">'+title+'</div>'
+          +'<div style="font-family:Orbitron,sans-serif;font-size:0.38rem;color:rgba(255,255,255,0.25);letter-spacing:1.5px;margin-top:1px;">HOST ALERT</div>'
+        +'</div>'
+      +'</div>'
+      +'<button onclick="document.getElementById(\'hostEventAlertPopup\').remove()" style="'
+        +'padding:2px 7px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);'
+        +'background:transparent;color:rgba(255,255,255,0.3);font-size:0.6rem;cursor:pointer;flex-shrink:0;">✕</button>'
+    +'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:5px;padding-left:42px;">'
+      +lines.map(function(l){
+        return '<div style="font-size:0.6rem;color:rgba(255,255,255,0.6);line-height:1.5;">'+l+'</div>';
+      }).join('')
+    +'</div>'
+    +'<button onclick="document.getElementById(\'hostEventAlertPopup\').remove()" style="'
+      +'width:100%;margin-top:12px;padding:8px;border-radius:8px;cursor:pointer;'
+      +'border:1px solid '+col+'40;background:'+col+'0e;color:'+col+';'
+      +'font-family:Orbitron,sans-serif;font-size:0.55rem;font-weight:800;letter-spacing:1px;'
+      +'transition:all 0.15s;" onmouseover="this.style.background=\''+col+'1e\'" onmouseout="this.style.background=\''+col+'0e\'">✓ ACKNOWLEDGED</button>';
+
+  document.body.appendChild(div);
+  setTimeout(function(){ var e=document.getElementById('hostEventAlertPopup'); if(e)e.remove(); }, 20000);
+
+  try {
+    var ctx=new(window.AudioContext||window.webkitAudioContext)();
+    [[440,0],[550,0.12],[440,0.24]].forEach(function(p){
+      var o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);
+      o.type='sine';o.frequency.value=p[0];var t=ctx.currentTime+p[1];
+      g.gain.setValueAtTime(0.1,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.25);o.start(t);o.stop(t+0.28);
+    });
+  } catch(e){}
+}
+
 function getTechTaxRate() {
   return policyPicks && policyPicks['synapse-city'] === 'sc-p4' ? 2 : 1;
 }
@@ -10789,7 +11701,7 @@ const POLICY_CARDS = {
     { id:'ab-p1', name:'Open Harbor Act',         desc:'+3 Raw Materials every round trades happen', red:false },
     { id:'ab-p2', name:'Flood Insurance Fund',    desc:'Immune to the next negative water event', red:false },
     { id:'ab-p3', name:'Tax Maniac',              desc:'Choose one city to raise their trade tax by 10%', red:true },
-    { id:'ab-p4', name:'Power Trip',              desc:'Deny trade deals & cut all communication between any 2 other cities for one round', red:true },
+    { id:'ab-p4', name:'Power Trip',              desc:'Deny trade deals between 2 nations for one round', red:true },
     { id:'ab-p5', name:'New Leadership',          desc:'Propose a Trade of Mayors — if they refuse, they lose −20 Capital', red:true },
   ],
   'synapse-city': [
@@ -10801,7 +11713,7 @@ const POLICY_CARDS = {
   ],
   'ironvale': [
     { id:'ih-p1', name:'Union Contract',         desc:'Pay −10 Capital now, prevent Happiness from dropping below 40', red:false },
-    { id:'ih-p2', name:'Export Deal',            desc:'+10 Capital, −5 Raw Materials every round', red:false },
+    { id:'ih-p2', name:'Export Deal',            desc:'+5 Capital, −5 Raw Materials every round', red:false },
     { id:'ih-p3', name:'Environmental Fine Waiver', desc:'−15 Pollution when used', red:false },
     { id:'ih-p4', name:'Villain Corp',           desc:'A denial card — void any other city\'s policy card', red:true },
     { id:'ih-p5', name:'Change In Leadership',   desc:'Choose a new mayor from your team', red:true },
@@ -10829,7 +11741,6 @@ const USED_POLICY_SK = 'city-monitor-policy-used';
 const ONGOING_POLICY_CARDS = new Set([
   'ab-p1', // Open Harbor Act — +3 Raw Materials/round
   'sc-p1', // AI Efficiency Program — +5 Capital/round
-  'ih-p1', // Union Contract — prevents Happiness drop
   'ih-p2', // Export Deal — +10 Capital, −5 Raw/round
   'vd-p1', // Green Subsidy — +3 Food, +1 Water/round
   'vd-p2', // Nature Reserve — Pollution cap
@@ -11422,6 +12333,168 @@ function _showHostMayorTradeResultPopup(accepted, ev, fromCity, toCity) {
 }
 
 
+// ── Auto-open people trade popup when a people-trade policy card is used ──
+function _autoOpenPeopleTradeForCard(ev) {
+  if (!ev || !ev.cardId || !PEOPLE_TRADE_CARDS[ev.cardId]) return;
+
+  var ptInfo   = PEOPLE_TRADE_CARDS[ev.cardId];
+  var city     = CITIES.find(function(c){ return c.id === ev.cityId; });
+  var card     = (POLICY_CARDS[ev.cityId]||[]).find(function(c){ return c.id === ev.cardId; });
+  var roleList = (ptInfo.roles || []).map(function(r) {
+    var role = (typeof ROLES !== 'undefined') ? ROLES.find(function(ro){ return ro.id === r; }) : null;
+    return role ? role.name : r;
+  }).join(', ');
+
+  // Small delay so policyCardUsedPopup renders first, then this overlays it
+  setTimeout(function() {
+    var existing = document.getElementById('peopleTradeAutoPopup');
+    if (existing) existing.remove();
+
+    var cityColor = city ? city.color : '#818cf8';
+    var typeLabel = ptInfo.type === 'mayor-trade'          ? '🏛️ Mayor Trade'
+                  : ptInfo.type === 'internal-role-change' ? '🔄 Internal Role Change'
+                  : ptInfo.type === 'role-swap'            ? '🔀 Role Swap'
+                  :                                          '👥 People Trade';
+
+    var roleChips = (ptInfo.roles || []).map(function(r) {
+      var role = (typeof ROLES !== 'undefined') ? ROLES.find(function(ro){ return ro.id === r; }) : null;
+      var label = role ? role.name : r;
+      return '<span style="display:inline-block;padding:3px 10px;border-radius:12px;'
+        +'background:rgba(129,140,248,0.14);border:1px solid rgba(129,140,248,0.35);'
+        +'font-family:Orbitron,sans-serif;font-size:0.5rem;font-weight:700;color:#818cf8;'
+        +'margin:2px;">'+label+'</span>';
+    }).join('');
+
+    var div = document.createElement('div');
+    div.id = 'peopleTradeAutoPopup';
+    div.style.cssText = 'position:fixed;inset:0;z-index:9400;background:rgba(5,8,15,0.97);'
+      +'display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;'
+      +'backdrop-filter:blur(14px);animation:egFadeIn 0.3s ease-out;padding:20px;overflow-y:auto;';
+
+    div.innerHTML = '<div style="max-width:480px;width:100%;text-align:center;">'
+
+      // Header
+      +'<div style="display:inline-flex;align-items:center;gap:8px;padding:5px 16px;'
+        +'border-radius:20px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);'
+        +'font-family:Orbitron,sans-serif;font-size:0.48rem;font-weight:800;color:#ef4444;'
+        +'letter-spacing:2px;margin-bottom:14px;">⚠️ ACTION REQUIRED — PEOPLE TRADE</div>'
+
+      +'<div style="font-size:2.5rem;margin-bottom:8px;">👥</div>'
+      +'<div style="font-family:Orbitron,sans-serif;font-size:0.82rem;font-weight:900;color:#fbbf24;'
+        +'letter-spacing:3px;margin-bottom:4px;">PEOPLE TRADE TRIGGERED</div>'
+      +'<div style="font-family:Orbitron,sans-serif;font-size:0.45rem;font-weight:700;'
+        +'color:rgba(255,255,255,0.3);letter-spacing:2px;margin-bottom:20px;">'
+        +typeLabel.toUpperCase()+'</div>'
+
+      // Card info
+      +'<div style="padding:16px 20px;border-radius:12px;border:2px solid '+cityColor+'35;'
+        +'background:'+cityColor+'0a;margin-bottom:16px;text-align:left;">'
+        +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">'
+          +'<div style="font-size:1.8rem;">'+(city ? city.icon : '🏙️')+'</div>'
+          +'<div>'
+            +'<div style="font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:900;color:'+cityColor+';">'
+              +(city ? city.name : ev.cityId)+' · '+( card ? card.name : ev.cardId)+'</div>'
+            +'<div style="font-size:0.55rem;color:rgba(255,255,255,0.45);margin-top:2px;">'
+              +(card ? card.desc : ptInfo.desc || '')+'</div>'
+          +'</div>'
+        +'</div>'
+        // Role chips
+        +(roleChips ? '<div style="margin-top:8px;"><span style="font-size:0.5rem;color:rgba(255,255,255,0.3);'
+            +'font-family:Orbitron,sans-serif;letter-spacing:1px;margin-right:6px;">ROLES:</span>'
+            +roleChips+'</div>' : '')
+      +'</div>'
+
+      // Instructions per type
+      +'<div style="padding:12px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);'
+        +'background:rgba(255,255,255,0.02);margin-bottom:20px;font-size:0.6rem;'
+        +'color:rgba(255,255,255,0.5);line-height:1.7;text-align:left;">'
+        +( ptInfo.type === 'mayor-trade'
+          ? '🏛️ <strong style="color:#fbbf24;">Select the target nation</strong> below to propose a Mayor Trade.<br>'
+            +'If they refuse, they lose <strong style="color:#ef4444;">−20 Capital</strong>.'
+          : ptInfo.type === 'internal-role-change'
+          ? '🔄 <strong style="color:#fbbf24;">Select the new team member</strong> below to assign as '+(roleList||'the role')+'.<br>'
+            +'This is an internal change within <strong style="color:'+cityColor+';">'+(city?city.name:ev.cityId)+'</strong>.'
+          : ptInfo.type === 'role-swap'
+          ? '🔀 <strong style="color:#fbbf24;">Select the target nation</strong> to swap '+(roleList||'roles')+'.<br>'
+            +'Both nations\' members in this role will be exchanged.'
+          : '👥 Complete the people trade below.')
+      +'</div>'
+
+      // Target city selector (shown for non-internal trades)
+      +( ptInfo.type !== 'internal-role-change'
+        ? '<div style="margin-bottom:16px;text-align:left;">'
+            +'<div style="font-family:Orbitron,sans-serif;font-size:0.5rem;font-weight:700;'
+              +'color:rgba(255,255,255,0.4);letter-spacing:1px;margin-bottom:6px;">TARGET NATION</div>'
+            +'<select id="ptAutoTargetCity" style="width:100%;padding:9px 12px;border-radius:8px;'
+              +'border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);'
+              +'color:#e2e8f0;font-size:0.68rem;cursor:pointer;">'
+              + CITIES.filter(function(c){ return c.id !== ev.cityId; })
+                      .map(function(c){ return '<option value="'+c.id+'">'+c.icon+' '+c.name+'</option>'; }).join('')
+            +'</select>'
+          +'</div>'
+        : '')
+
+      // Action buttons
+      +'<div style="display:flex;gap:10px;">'
+        +'<button onclick="document.getElementById(\'peopleTradeAutoPopup\').remove()" style="'
+          +'flex:1;padding:11px;border-radius:9px;cursor:pointer;'
+          +'border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);'
+          +'color:rgba(255,255,255,0.4);font-family:Orbitron,sans-serif;font-size:0.58rem;'
+          +'font-weight:700;letter-spacing:1px;">LATER</button>'
+        +'<button id="ptAutoConfirmBtn" style="'
+          +'flex:2;padding:11px;border-radius:9px;cursor:pointer;'
+          +'border:2px solid rgba(251,191,36,0.55);background:rgba(251,191,36,0.14);color:#fbbf24;'
+          +'font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:900;letter-spacing:1.5px;'
+          +'transition:all 0.15s;">👥 SET UP TRADE →</button>'
+      +'</div>'
+    +'</div>';
+
+    document.body.appendChild(div);
+
+    // Wire the confirm button
+    var confirmBtn = document.getElementById('ptAutoConfirmBtn');
+    if (confirmBtn) {
+      confirmBtn.addEventListener('click', function() {
+        var targetSel = document.getElementById('ptAutoTargetCity');
+        var targetId  = targetSel ? targetSel.value : (ev.targetId || null);
+        div.remove();
+
+        // Navigate to draft page and pre-configure people trade form
+        switchPage('draft');
+        setTimeout(function() {
+          var sel = document.getElementById('ptActivePolicyCard');
+          if (sel) { sel.value = ev.cardId; }
+
+          var ptFrom = document.getElementById('ptFromCity');
+          if (ptFrom && ev.cityId) { ptFrom.value = ev.cityId; }
+
+          if (targetId) {
+            var ptTo = document.getElementById('ptToCity');
+            if (ptTo) { ptTo.value = targetId; }
+          }
+
+          if (typeof refreshPeopleTradeForm === 'function') refreshPeopleTradeForm();
+
+          var ptBody = document.getElementById('peopleTradeBody');
+          if (ptBody) {
+            ptBody.style.display = '';
+            setTimeout(function(){ ptBody.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 120);
+          }
+
+          // Flash highlight
+          var ptSection = document.getElementById('peopleTradeSection') || ptBody;
+          if (ptSection) {
+            ptSection.style.transition = 'box-shadow 0.3s';
+            ptSection.style.boxShadow = '0 0 0 3px rgba(251,191,36,0.6)';
+            setTimeout(function(){ if(ptSection) ptSection.style.boxShadow = ''; }, 1800);
+          }
+          showToastMsg && showToastMsg('👥 People trade form ready — complete and click Confirm Trade');
+        }, 150);
+      });
+    }
+  }, 1200); // delay so policyCardUsedPopup shows first
+}
+
 function markPolicyCardUsed(cardId) {
   if (!cardId) return;
   usedPolicyCards.add(cardId);
@@ -11845,14 +12918,29 @@ function _autoEnactEraOfExpenses() {
   usedPolicyCards.add('sc-p4');
   savePolicyPicks();
 
-  // Apply -5% political (red card)
-  const before = politicalRanks['synapse-city'] ?? 50;
-  politicalRanks['synapse-city'] = Math.max(0, before - 5);
-  const delta = politicalRanks['synapse-city'] - before;
-  if (delta) {
-    logPolitical({ cityId: 'synapse-city', delta, newVal: politicalRanks['synapse-city'], source: 'Red Policy Card', sourceIcon: '🃏', detail: 'Era of Expenses selected (−5% political)' });
-    savePoliticalRanks();
+  const synCity = CITIES.find(c => c.id === 'synapse-city');
+
+  // ── −10 Capital activation cost ──────────────────────────────────────
+  const capBefore = safeGetVal('synapse-city', 'capital');
+  safeSetVal('synapse-city', 'capital', capBefore - 10);
+  roundHistory.unshift({ round: -1, icon: '📜', changes: [
+    { cityId:'synapse-city', resourceId:'capital', valueBefore: capBefore, valueAfter: capBefore - 10, delta: -10, explanation:'Era of Expenses activation cost' }
+  ], label:`📜 Era of Expenses: ${synCity?.name||'Synapse'} paid −10 Capital to activate` });
+
+  // ── −5% political (blanket red-card penalty, logged separately) ──────
+  const polBefore1 = politicalRanks['synapse-city'] ?? 50;
+  politicalRanks['synapse-city'] = Math.max(0, polBefore1 - 5);
+  if (politicalRanks['synapse-city'] !== polBefore1) {
+    logPolitical({ cityId: 'synapse-city', delta: politicalRanks['synapse-city'] - polBefore1, newVal: politicalRanks['synapse-city'], source: 'Red Policy Card', sourceIcon: '🃏', detail: 'Era of Expenses — red card selection penalty (−5%)' });
   }
+
+  // ── Additional −3% political (activation cost specific to this card) ─
+  const polBefore2 = politicalRanks['synapse-city'];
+  politicalRanks['synapse-city'] = Math.max(0, polBefore2 - 3);
+  if (politicalRanks['synapse-city'] !== polBefore2) {
+    logPolitical({ cityId: 'synapse-city', delta: politicalRanks['synapse-city'] - polBefore2, newVal: politicalRanks['synapse-city'], source: 'Era of Expenses', sourceIcon: '⚡', detail: 'Activation cost — additional −3% political' });
+  }
+  savePoliticalRanks();
 
   // Update tech tax modal label and preview to show ×2 rate
   var rateLabel = document.getElementById('techTaxRateLabel');
@@ -11864,17 +12952,27 @@ function _autoEnactEraOfExpenses() {
   // Push policyCardUsed to Firebase so viewer devices see the notification
   if (_fbDB && window._fb && window._fb.code) {
     _fbDB.ref('games/' + window._fb.code + '/events/policyCardUsed').set({
-      ts: Date.now(),
-      cardId: 'sc-p4',
-      cardName: 'Era of Expenses',
-      cityId: 'synapse-city',
-      source: 'host-auto',
+      ts:        Date.now(),
+      cardId:    'sc-p4',
+      cardName:  'Era of Expenses',
+      cardDesc:  '−10 Capital now, but every other city pays 2 Capital per minute researched instead of 1',
+      cityId:    'synapse-city',
+      cityName:  synCity?.name || 'Synapse City',
+      cityIcon:  synCity?.icon || '⚡',
+      cityColor: synCity?.color || '#ef4444',
+      cardIsRed: true,
+      source:    'host-auto',
+      eraOfExpenses: true,
+      capCost:   -10,
+      polCost:   -8, // total: −5 red-card + −3 activation
     }).catch(function(){});
   }
 
   save();
+  renderScoreboard();
   renderPolicyPickerGrid();
-  showToastMsg('⚡ Era of Expenses enacted — tech tax is now 2 Capital/min for all nations!');
+  renderHistory();
+  showToastMsg('⚡ Era of Expenses enacted — Synapse paid −10 Capital & −8% political total. Tech tax is now 2 Capital/min!');
   playSuccess();
 }
 
@@ -11896,6 +12994,38 @@ function confirmPolicyCards() {
 
   // Auto-create resource rules for recurring/passive policy cards
   applyPolicyCardRules();
+
+  // ── Auto-enact all ongoing/recurring policy cards ─────────────────
+  // Mark them used immediately and push policyCardUsed to Firebase so
+  // viewer devices see the popup and the Rules tab updates on all devices
+  if (_fbDB && window._fb && window._fb.code) {
+    CITIES.forEach(city => {
+      const cardId = policyPicks[city.id];
+      if (!cardId) return;
+      // Only auto-enact cards that generate ongoing rules (not one-time, not red action cards)
+      if (!ONGOING_POLICY_CARDS.has(cardId)) return;
+      if (usedPolicyCards.has(cardId)) return; // already enacted
+      const card = (POLICY_CARDS[city.id]||[]).find(c=>c.id===cardId);
+      if (!card) return;
+
+      markPolicyCardUsed(cardId);
+
+      // Push Firebase event so viewer sees the activated popup and rules sync
+      _fbDB.ref('games/'+window._fb.code+'/events/policyCardUsed').set({
+        ts:        Date.now() + CITIES.indexOf(city), // stagger by 1ms so each fires
+        cardId,
+        cardName:  card.name,
+        cardDesc:  card.desc,
+        cityId:    city.id,
+        cityName:  city.name,
+        cityIcon:  city.icon,
+        cityColor: city.color,
+        source:    'host-auto',
+        cardIsRed: !!card.red,
+        isOngoing: true,
+      }).catch(()=>{});
+    });
+  }
 
   renderPolicySummary();
   renderRules();
@@ -11919,11 +13049,17 @@ const POLICY_CARD_RULES = {
       label:`📜 [${n}] AI Efficiency Program — +5 Capital (if Raw Materials ≥ 65)`,
       condition_resource:'raw-materials', condition_operator:'>=', condition_value:65, one_time:false, triggered:false }];
   },
-  'ih-p1': () => [],
+  'ih-p1': (cityId) => {
+    // Only add the floor rule if the card has been used (−10 Capital paid)
+    if (!usedPolicyCards.has('ih-p1')) return [];
+    const n = CITIES.find(c=>c.id===cityId)?.name||cityId;
+    return [{ type:'standard', city_id:cityId, city_specific:true, resource_id:'happiness', delta:0,
+      label:`📜 [${n}] Union Contract — Happiness cannot drop below 40`, one_time:false, triggered:false, happinessFloor:40 }];
+  },
   'ih-p2': (cityId) => {
     const n = CITIES.find(c=>c.id===cityId)?.name||cityId;
     return [
-      { type:'standard', city_id:cityId, city_specific:true, resource_id:'capital',       delta:10, label:`📜 [${n}] Export Deal — +10 Capital every round`, one_time:false, triggered:false },
+      { type:'standard', city_id:cityId, city_specific:true, resource_id:'capital',       delta:5,  label:`📜 [${n}] Export Deal — +5 Capital every round`, one_time:false, triggered:false },
       { type:'standard', city_id:cityId, city_specific:true, resource_id:'raw-materials', delta:-5, label:`📜 [${n}] Export Deal — −5 Raw Materials every round`, one_time:false, triggered:false }
     ];
   },
@@ -11967,6 +13103,16 @@ function applyPolicyCardRules() {
 
 // One-time resource change cards — can be activated with a button
 const ONE_TIME_APPLY_CARDS = {
+  'ih-p1': { name:'Union Contract', apply: (cityId) => {
+    const capBefore = safeGetVal(cityId, 'capital');
+    safeSetVal(cityId, 'capital', capBefore - 10);
+    return '−10 Capital paid. Happiness will not drop below 40 for the rest of the game.';
+  }},
+  'ab-p4': { name:'Power Trip', apply: (cityId) => {
+    // Open the nation picker immediately — actual effect is handled by openPowerTripPicker
+    setTimeout(function(){ openPowerTripPicker('ab-p4'); }, 200);
+    return 'Select 2 nations to block trades for this round.';
+  }},
   'sc-p2': { name:'Data Monopoly',           apply: (cityId) => { safeSetVal(cityId,'capital', safeGetVal(cityId,'capital')+10); return '+10 Capital applied.'; } },
   'sc-p3': { name:'A Reset',                 apply: (cityId) => {
     // Return starting amount of currently lowest resource
@@ -12109,9 +13255,15 @@ function activateOneTimeCard(cityId, cardId) {
   if (usedPolicyCards.has(cardId)) { showToastMsg('⚠️ This card has already been used.'); return; }
 
   const result = oneTime.apply(cityId);
-  markPolicyCardUsed(cardId);
+  // ab-p4 Power Trip: marking used is deferred to _activatePowerTrip (after nation picker)
+  if (cardId !== 'ab-p4') {
+    markPolicyCardUsed(cardId);
+    // Re-run policy card rules so any floor/cap rules now appear in the Rules tab
+    applyPolicyCardRules();
+  }
   save();
   renderScoreboard();
+  renderRules();
   renderPolicySummary();
   roundHistory.unshift({ round:-1, changes:[], label:`📜 Policy Card: ${oneTime.name} activated for ${city?.name} — ${result}`, icon:'📜' });
   renderHistory();
@@ -12634,10 +13786,16 @@ function executePeopleTrade() {
         histLabel: `🏛️ Leadership Change: ${playerName} becomes ${roleLabel} of ${fromCity?.name}${swapNote}`,
         source: 'host',
       }).catch(()=>{});
+      { const _c=(POLICY_CARDS[fromId]||[]).find(c=>c.id===activeCardId); const _pt=PEOPLE_TRADE_CARDS[activeCardId]||null;
       _fbDB.ref('games/'+window._fb.code+'/events/policyCardUsed').set({
-        ts: Date.now(), cityId: fromId, cardId: activeCardId, cardName: (POLICY_CARDS[fromId]||[]).find(c=>c.id===activeCardId)?.name||activeCardId,
-        cityIcon: fromCity?.icon, cityName: fromCity?.name, source: 'host', approvedTrade: true,
-      }).catch(()=>{});
+        ts: Date.now(), cityId: fromId, cardId: activeCardId,
+        cardName: _c?.name||activeCardId, cardDesc: _c?.desc||'',
+        cityIcon: fromCity?.icon, cityName: fromCity?.name, cityColor: fromCity?.color,
+        source: 'host', approvedTrade: true,
+        cardIsRed: !!(_c?.red),
+        peopleTradeCard: !!_pt, peopleTradeType: _pt?.type||null,
+        peopleTradeRoles: _pt?.roles||null, peopleTradeDesc: _pt?.desc||null,
+      }).catch(()=>{}); }
     }
     return;
   }
@@ -12690,7 +13848,34 @@ function executePeopleTrade() {
 
   saveDraft();
   save();
-  adjustRelation(fromId, toId, 1);
+
+  // Numbers Over Friends (vd-p5) — forced trade causes −5% bilateral relations between the 2 nations
+  if (activeCardId === 'vd-p5') {
+    adjustRelation(fromId, toId, -5);
+    logPolitical && logPolitical([
+      { cityId: fromId, delta: 0, newVal: politicalRanks[fromId]??50, source: 'Numbers Over Friends', sourceIcon: '📜', detail: `Forced Budget Manager swap with ${toCity?.name} (−5% bilateral relations)` },
+    ]);
+    roundHistory.unshift({ round:-1, changes:[], icon:'📜',
+      label:`📜 Numbers Over Friends: ${fromCity?.name} ↔ ${toCity?.name} Budget Manager swap — −5% bilateral relations` });
+  } else if (activeCardId === 'nh-p5') {
+    // Political Instability Insurance — forced role trade causes −8% bilateral relations
+    adjustRelation(fromId, toId, -8);
+    logPolitical && logPolitical([
+      { cityId: fromId, delta: 0, newVal: politicalRanks[fromId]??50, source: 'Political Instability Insurance', sourceIcon: '📜', detail: `Forced role trade with ${toCity?.name} (−8% bilateral relations)` },
+    ]);
+    roundHistory.unshift({ round:-1, changes:[], icon:'📜',
+      label:`📜 Political Instability Insurance: ${fromCity?.name} ↔ ${toCity?.name} forced role trade — −8% bilateral relations` });
+  } else if (activeCardId === 'sc-p5') {
+    // New Vision — Engineer swap causes −5% bilateral relations
+    adjustRelation(fromId, toId, -5);
+    logPolitical && logPolitical([
+      { cityId: fromId, delta: 0, newVal: politicalRanks[fromId]??50, source: 'New Vision', sourceIcon: '📜', detail: `Engineer swap with ${toCity?.name} (−5% bilateral relations)` },
+    ]);
+    roundHistory.unshift({ round:-1, changes:[], icon:'📜',
+      label:`📜 New Vision: ${fromCity?.name} ↔ ${toCity?.name} Engineer swap — −5% bilateral relations` });
+  } else {
+    adjustRelation(fromId, toId, 1);
+  }
   saveRelations(); syncPoliticalFromRelations();
   // Force full scoreboard rebuild so both cities show updated members/roles
   Object.keys(sbRowMap).forEach(k => delete sbRowMap[k]);
@@ -12719,11 +13904,16 @@ function executePeopleTrade() {
       histLabel,
       source: 'host',
     }).catch(()=>{});
+    { const _c2=(POLICY_CARDS[fromId]||[]).find(c=>c.id===activeCardId); const _pt2=PEOPLE_TRADE_CARDS[activeCardId]||null;
     _fbDB.ref('games/'+window._fb.code+'/events/policyCardUsed').set({
       ts: Date.now(), cityId: fromId, cardId: activeCardId,
-      cardName: (POLICY_CARDS[fromId]||[]).find(c=>c.id===activeCardId)?.name||activeCardId,
-      cityIcon: fromCity?.icon, cityName: fromCity?.name, source: 'host', approvedTrade: true,
-    }).catch(()=>{});
+      cardName: _c2?.name||activeCardId, cardDesc: _c2?.desc||'',
+      cityIcon: fromCity?.icon, cityName: fromCity?.name, cityColor: fromCity?.color,
+      source: 'host', approvedTrade: true,
+      cardIsRed: !!(_c2?.red),
+      peopleTradeCard: !!_pt2, peopleTradeType: _pt2?.type||null,
+      peopleTradeRoles: _pt2?.roles||null, peopleTradeDesc: _pt2?.desc||null,
+    }).catch(()=>{}); }
   }
 }
 
@@ -15227,6 +16417,8 @@ function computeRoundEffects(cityId) {
         case '==': condMet = val === rule.condition_value; break;
       }
     }
+    // trade_condition: true means this rule only fires if a resource trade happened this round
+    if (rule.trade_condition && !resourceTradeHappenedThisRound) condMet = false;
     if (condMet && deltas[rule.resource_id] !== undefined) {
       deltas[rule.resource_id] += rule.delta;
       expl[rule.resource_id] = expl[rule.resource_id] || [];
@@ -16436,6 +17628,9 @@ function renderResourceGuide() {
 }
 
 function applyRound() {
+  // Reset per-round trade tracker (Open Harbor Act gate)
+  resourceTradeHappenedThisRound = false;
+
   // Full state snapshot before applying round
   snapshots[currentRound] = {
     data:           JSON.parse(JSON.stringify(data)),
@@ -16465,7 +17660,8 @@ function applyRound() {
 
     // Policy card caps: ih-p1 Union Contract (happiness floor 40), vd-p2 Nature Reserve (pollution cap 70)
     const cardId = policyPicks[c.id];
-    if (cardId === 'ih-p1' && data[c.id].happiness) {
+    // Union Contract (ih-p1) — happiness floor at 40, only once the card has been USED (−10 Capital paid)
+    if (usedPolicyCards.has('ih-p1') && policyPicks[c.id] === 'ih-p1' && data[c.id].happiness) {
       if (data[c.id].happiness.value < 40) {
         changes.push({ cityId: c.id, resourceId:'happiness', valueBefore: data[c.id].happiness.value, valueAfter:40, delta: 40-data[c.id].happiness.value, explanation:'📜 Union Contract — Happiness cannot drop below 40' });
         data[c.id].happiness.prevValue = data[c.id].happiness.value;
@@ -16541,6 +17737,14 @@ function applyRound() {
 
   roundHistory.unshift({ round: currentRound, changes, label: `Round ${currentRound}`, icon:'⚡' });
   maxAppliedRound = Math.max(maxAppliedRound, currentRound);
+  // Clear Power Trip after round ends (it only lasts one round)
+  if (powerTripState && powerTripState.round === currentRound) {
+    powerTripState = null;
+    if (_fbDB && window._fb && window._fb.code) {
+      _fbDB.ref('games/'+window._fb.code+'/events/powerTripActive').remove().catch(function(){});
+    }
+  }
+
   currentRound++;
   viewingRound = null;
   save();
@@ -17285,6 +18489,20 @@ function executeTrade() {
       const res = RESOURCES.find(r=>r.id===item.resourceId);
       showFeedback(fb,'error',`⚠️ ${CITIES.find(c=>c.id===toId)?.name} only has ${have} ${res?.name} (needs ${item.amount}).`);
       playError(); return;
+    }
+  }
+
+  // ── Mark that a resource trade happened this round (for Open Harbor Act) ──
+  resourceTradeHappenedThisRound = true;
+
+  // ── Power Trip intercept check ──────────────────────────────────────
+  if (!window._powerTripBypass && isPowerTripBlocking && isPowerTripBlocking(fromId) || isPowerTripBlocking && isPowerTripBlocking(toId)) {
+    if (fromId !== 'azure-bay' && toId !== 'azure-bay') {
+      // Intercept — show Azure the approve/deny popup
+      _checkPowerTripIntercept(fromId, toId, function() {
+        return { fromId, toId, itemsA: [...validA], itemsB: [...validB] };
+      });
+      return;
     }
   }
 
@@ -20361,6 +21579,10 @@ async function confirmReset() {
   warState = {}; activeWars = []; warImmuneRounds = {};
   saveWarState();
 
+  powerTripState = null;
+  window._powerTripBypass = false;
+  resourceTradeHappenedThisRound = false;
+
   // ── Reset policy cards + used tracking ──
   CITIES.forEach(c => { policyPicks[c.id] = null; });
   usedPolicyCards = new Set();
@@ -20424,15 +21646,18 @@ async function confirmReset() {
   renderAllianceBoard();
   renderRelationsMatrix();
   renderRules();
+  renderDraftPage && renderDraftPage();
   resetTimer();
+  _updateSummitButtonStates();
 
-  // Push clean state then reload page for guaranteed fresh defaults
+  // Save and re-push to Firebase so all viewers see the clean state
   await save();
+  if (_fbDB && window._fb && window._fb.code) {
+    await window.fbPushState().catch(() => {});
+  }
   showSaveIndicator();
   playSuccess();
-
-  // Short delay then reload — ensures window.storage is flushed before reload
-  setTimeout(() => { window.location.reload(); }, 400);
+  showToastMsg('✓ Game reset — all data cleared. Same join code active.');
 
   }, '↺');
 }
@@ -21936,7 +23161,7 @@ const DEFAULT_STUDENTS = [
   'Milana','Rosalie','Sloane','Braxton','Fiona','Addelynn','Sawyer C','Blake',
   'Rosemary','Liam','Reygan','Grace','Wendy','Peter','Dean','Sawyer M',
   'Elliot M','Rosco','Mason','Elliot P','Jonah P','Spencer','Jack','Isla',
-  'Harrison','Jonah','Edmund','Finn','Olivia','Cameron','Kacey','Chase','Wadood','Vito',
+  'Harrison','Jonah','Edmund','Finn','Olivia','Cameron','Kacey','Chase','Wadood','Vito','Timmy',
 ];
 
 let draftPool      = [...DEFAULT_STUDENTS];   // undrafted player names
@@ -22077,6 +23302,46 @@ function shufflePool() {
   playWhoosh();
 }
 
+// Randomly assign ALL students (pool + drafted) to nations AND roles
+function randomAssignAll() {
+  // Collect everyone — pool + all drafted rosters
+  const everyone = [...draftPool];
+  CITIES.forEach(c => everyone.push(...(draftRosters[c.id] || [])));
+  if (everyone.length === 0) { showToastMsg('⚠️ No students to assign.'); return; }
+
+  // Fisher-Yates shuffle
+  for (let i = everyone.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [everyone[i], everyone[j]] = [everyone[j], everyone[i]];
+  }
+
+  // Clear pool and all rosters
+  draftPool = [];
+  CITIES.forEach(c => { draftRosters[c.id] = []; roleAssignments[c.id] = {}; });
+
+  // Distribute evenly across cities
+  everyone.forEach((name, i) => {
+    draftRosters[CITIES[i % CITIES.length].id].push(name);
+  });
+
+  // Assign roles within each city — cycle through non-optional roles first, then optional
+  const coreRoles = ROLES.filter(r => !r.optional).map(r => r.id);
+  const allRoleIds = ROLES.map(r => r.id);
+  CITIES.forEach(city => {
+    const members = draftRosters[city.id] || [];
+    if (!roleAssignments[city.id]) roleAssignments[city.id] = {};
+    members.forEach((name, idx) => {
+      const rolePool = idx < coreRoles.length ? coreRoles : allRoleIds;
+      roleAssignments[city.id][name] = rolePool[idx % rolePool.length];
+    });
+  });
+
+  saveDraft();
+  renderDraftPage();
+  playWhoosh();
+  showToastMsg('🎲 Randomly assigned ' + everyone.length + ' students to nations & roles!');
+}
+
 // Return everyone from all cities back to the pool
 function clearAllDrafted() {
   CITIES.forEach(c => {
@@ -22159,6 +23424,7 @@ function renderDraftPage() {
               <button class="draft-btn-add" onclick="addPlayer()">+ Add Player</button>
               <div class="draft-pool-actions">
                 <button class="draft-btn-secondary" onclick="shufflePool()" title="Randomly redistribute drafted players across all cities">🔀 Shuffle Teams</button>
+                <button class="draft-btn-secondary" onclick="randomAssignAll()" title="Randomly assign ALL students to nations and roles">🎲 Random</button>
                 <button class="draft-btn-secondary" onclick="clearAllDrafted()" title="Return everyone to pool">↩ Return All</button>
               </div>
               <button class="draft-btn-danger" onclick="resetDraft()">🗑 Clear All Players</button>
