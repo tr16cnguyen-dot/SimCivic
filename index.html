@@ -1251,7 +1251,6 @@ select.trade-select:focus, select.res-select:focus { border-color: var(--border-
   padding: 8px 12px; border-top: 1px solid var(--border);
   display: none; flex-direction: column; gap: 3px;
 }
-.history-details.open { display: flex; }
 .history-change-row {
   display: flex; align-items: center; gap: 8px;
   padding: 3px 0; font-size: 0.68rem;
@@ -3204,6 +3203,44 @@ window.fbJoinAsNation = async function(nationId) {
   // NOW enable viewer mode — data is ready so page renders immediately with content
   enableViewerMode();
 
+  // Fetch any currently-active event nodes so late joiners immediately see ongoing state
+  try {
+    const eventsSnap = await _fbDB.ref(`games/${code}/events`).once('value');
+    const evs = eventsSnap.val() || {};
+    // Active summit
+    if (evs.summitActive && evs.summitActive.active) {
+      window._summitIsActive = true;
+      _updateSummitButtonStates && _updateSummitButtonStates();
+    }
+    // Active game event — gameEvent listener handles this via _lastGameEventTs=0
+    // Active war — warSession listener handles this via _ws_lastTs=0
+    // Active nation card picker
+    if (evs.nationCardPickingOpen && evs.nationCardPickingOpen.ts) {
+      const myNation = window._fb.nation;
+      if (myNation && typeof _fbShowViewerNationCardPicker === 'function') {
+        _fbShowViewerNationCardPicker(evs.nationCardPickingOpen, code, myNation);
+      }
+    }
+    // Active aid request targeting this nation — only show if it's recent (last 5 min)
+    if (evs.aidRequests && evs.aidRequests.ts && (Date.now() - evs.aidRequests.ts < 5 * 60 * 1000)) {
+      const myNation = window._fb.nation;
+      if (myNation && evs.aidRequests.targetId === myNation) {
+        if (typeof _fbShowViewerAidPrompt === 'function') {
+          _fbShowViewerAidPrompt(evs.aidRequests, code);
+        }
+      }
+    }
+    // Active event choice (pending)
+    if (evs.gameEvent && evs.gameEvent.ts) {
+      // gameEvent listener fires automatically via .on() — no manual trigger needed
+    }
+    // Summit used nations
+    if (evs.summitUsedNations) {
+      window._summitUsedNations = new Set(Array.isArray(evs.summitUsedNations) ? evs.summitUsedNations : []);
+      _updateSummitButtonStates && _updateSummitButtonStates();
+    }
+  } catch(e) { console.warn('Active event fetch failed:', e); }
+
   // Set up live listeners for ongoing updates
   _fbDB.ref(`games/${code}/state`).on('value', snap => {
     const s = snap.val();
@@ -3666,7 +3703,7 @@ function renderViewerPage() {
 
   // ── Helper: nation card chip ──
   function buildNationCardChip(cityId) {
-    var rndPicks = cityCardPicks && cityCardPicks[currentRound] && cityCardPicks[currentRound][cityId];
+    var rndPicks = cityCardPicks && cityCardPicks['game'] && cityCardPicks['game'][cityId];
     if (!rndPicks || !rndPicks.selected || !rndPicks.selected.length) {
       return '<span style="font-size:0.58rem;color:var(--text-muted)">None selected</span>';
     }
@@ -4196,7 +4233,7 @@ function renderViewerPage() {
       +'</div>';
 
     // Nation card section — always show all 4 cards with live state
-    var rndPicks  = cityCardPicks && cityCardPicks[currentRound] && cityCardPicks[currentRound][myCity.id];
+    var rndPicks  = cityCardPicks && cityCardPicks['game'] && cityCardPicks['game'][myCity.id];
     // selected is a Set or array; eliminated is a Set or array
     var selSet  = rndPicks && rndPicks.selected   ? (rndPicks.selected   instanceof Set ? rndPicks.selected   : new Set(Array.isArray(rndPicks.selected)   ? rndPicks.selected   : [rndPicks.selected]))   : new Set();
     var elimSet = rndPicks && rndPicks.eliminated ? (rndPicks.eliminated instanceof Set ? rndPicks.eliminated : new Set(Array.isArray(rndPicks.eliminated) ? rndPicks.eliminated : [rndPicks.eliminated])) : new Set();
@@ -4519,8 +4556,11 @@ window.showSummitAnnouncement = function(ev) {
   overlay.style.display = 'flex';
   setTimeout(function() {
     overlay.style.display = 'none';
-    if (document.getElementById('globalSummitOverlay')&&document.getElementById('globalSummitOverlay').style.display!=='flex') {
-      callGlobalSummit && callGlobalSummit();
+    var summitOverlay = document.getElementById('globalSummitOverlay');
+    // Only open the summit overlay if it's not already showing
+    if (summitOverlay && summitOverlay.style.display !== 'flex') {
+      // Pass flag to bypass the _summitIsActive guard — the announcement IS the trigger
+      callGlobalSummit && callGlobalSummit(true);
     }
   }, 4000);
 };
@@ -4545,15 +4585,32 @@ window._fbSetupHostSummitListener = function(code) {
     window._summitUsedNations = new Set(Array.isArray(arr) ? arr : []);
     _updateSummitButtonStates();
   });
+
+  // ── allianceEnacted — show host popup when conditional alliance fires ──
+  var _lastHostAllianceEnactedTs = 0;
+  _fbDB.ref('games/'+code+'/events/allianceEnacted').on('value', function(snap) {
+    var ev = snap.val();
+    if (!ev || ev.ts <= _lastHostAllianceEnactedTs) return;
+    _lastHostAllianceEnactedTs = ev.ts;
+    // Only show popup if this was a conditional or one-time transfer
+    var rules = ev.rules || [];
+    var relevant = rules.filter(function(r){ return r.isConditionAlert || r.condition_resource || r.oneTime; });
+    if (!relevant.length) relevant = rules; // show all if no filter matches
+    if (!relevant.length) return;
+    _showHostConditionAlertPopup(relevant, ev.round, !!(ev.isConditionAlert));
+  });
 };
 
 window._fbViewerSummitTs = 0;
 window._fbSetupViewerSummitListener = function(code) {
-  var _joinedAt = Date.now(); // ignore all events stored before we joined
+  var _joinedAt = Date.now(); // ignore truly stale one-time push events
+  // Persistent-state nodes (active sessions) look back 30 min so
+  // late joiners and re-joiners see any ongoing summit, war, event, aid, card picker
+  var _persistentLookback = _joinedAt - 30 * 60 * 1000;
 
   _fbDB.ref('games/'+code+'/events/summit').on('value', function(snap) {
     var ev = snap.val();
-    if (!ev || ev.ts < _joinedAt - 5000 || ev.ts <= window._fbViewerSummitTs) return;
+    if (!ev || ev.ts < _persistentLookback || ev.ts <= window._fbViewerSummitTs) return;
     window._fbViewerSummitTs = ev.ts;
     showSummitAnnouncement(ev);
   });
@@ -4574,7 +4631,7 @@ window._fbSetupViewerSummitListener = function(code) {
   var lastSummitEndedTs = 0;
   _fbDB.ref('games/'+code+'/events/summitEnded').on('value', function(snap) {
     var ev = snap.val();
-    if (!ev || ev.ts < _joinedAt || ev.ts <= lastSummitEndedTs) return;
+    if (!ev || ev.ts < _persistentLookback || ev.ts <= lastSummitEndedTs) return;
     lastSummitEndedTs = ev.ts;
     clearInterval(_summitTimer);
     ['summitMiniTimer','globalSummitOverlay','summitAnnouncementOverlay'].forEach(function(id){
@@ -4603,9 +4660,16 @@ window._fbSetupViewerSummitListener = function(code) {
     _ws_allyDecided = false;
   }
 
+  var _wsDebounceTimer = null;
+  var _ws_lastDecisions = null; // track decisions separately to catch host-made changes
   _fbDB.ref('games/'+code+'/events/warSession').on('value', function(snap) {
-    var ws = snap.val();
+    // Debounce rapid phase changes by 120ms so they don't race each other
+    clearTimeout(_wsDebounceTimer);
+    var wsSnap = snap.val();
+    _wsDebounceTimer = setTimeout(function() { _wsHandlePhase(wsSnap); }, 120);
+  });
 
+  function _wsHandlePhase(ws) {
     // null = war over / no war — clear everything
     if (!ws || ws.phase === 'done') { _wsClearAll(); _ws_phase = null; _ws_lastTs = 0; return; }
 
@@ -4619,7 +4683,27 @@ window._fbSetupViewerSummitListener = function(code) {
     }
 
     // Don't re-render same phase (prevents flicker on every Firebase heartbeat)
-    if (ws.phase === _ws_phase) return;
+    // EXCEPTION: declaration phase — re-render when decisions change (host may have decided for a nation)
+    if (ws.phase === _ws_phase) {
+      if (ws.phase === 'declaration' && isWarParty) {
+        // Check if the decision for my side changed
+        var myDecisionNow = ws.decisions && ws.decisions[mySide];
+        var decisionsKey = JSON.stringify(ws.decisions);
+        if (decisionsKey === _ws_lastDecisions) return; // no change
+        _ws_lastDecisions = decisionsKey;
+        // Update my declaration screen to reflect host-submitted decision
+        var alertDiv = document.getElementById('viewerWarAlert');
+        if (alertDiv) {
+          if (myDecisionNow !== null && myDecisionNow !== undefined) {
+            alertDiv.innerHTML = _wsAwaitingOtherHtml(myDecisionNow, ws);
+          } else {
+            alertDiv.innerHTML = _wsDeclarationHtml(mySide, oppNat, myNat, ws, code);
+          }
+        }
+      }
+      return;
+    }
+    _ws_lastDecisions = null;
     _ws_phase = ws.phase;
 
     var myNation = window._fb.nation;
@@ -4651,8 +4735,8 @@ window._fbSetupViewerSummitListener = function(code) {
       div.id = 'viewerWarAlert';
       div.style.cssText = 'position:fixed;inset:0;z-index:8500;background:rgba(5,5,10,0.98);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px;font-family:Sora,sans-serif;';
       if (myDecision !== null && myDecision !== undefined) {
-        // Already submitted — show awaiting
-        div.innerHTML = _wsAwaitingOtherHtml(myDecision, ws);
+        // Host already submitted this nation's decision — show awaiting screen with host note
+        div.innerHTML = _wsAwaitingOtherHtml(myDecision, ws, true);
       } else {
         div.innerHTML = _wsDeclarationHtml(mySide, oppNat, myNat, ws, code);
       }
@@ -4668,8 +4752,9 @@ window._fbSetupViewerSummitListener = function(code) {
       div2.id = 'viewerWarAlert';
       if (!div2.parentNode) { div2.style.cssText = 'position:fixed;inset:0;z-index:8500;background:rgba(5,5,10,0.98);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px;font-family:Sora,sans-serif;'; document.body.appendChild(div2); }
       if (myDec2 !== null && myDec2 !== undefined) {
-        // I already decided — show waiting
-        div2.innerHTML = _wsAwaitingOtherHtml(myDec2, ws);
+        // I already decided — show waiting (check if host decided on my behalf)
+        var hostDecidedForMe = ws.decisionsSource === 'host';
+        div2.innerHTML = _wsAwaitingOtherHtml(myDec2, ws, hostDecidedForMe);
       } else {
         // I still need to decide — show buttons
         div2.innerHTML = _wsDeclarationHtml(mySide, oppNat, myNat, ws, code);
@@ -4718,7 +4803,10 @@ window._fbSetupViewerSummitListener = function(code) {
 
     // ── PHASE: ally_break ────────────────────────────────────────────────
     else if (ws.phase === 'ally_break') {
-      _wsClearAll();
+      // Only clear war/ally UI — NOT the result popup (it may still be showing)
+      ['viewerWarAlert','viewerAllyAlert','viewerWarWaiting','viewerAllyWaiting'].forEach(function(id){
+        var el = document.getElementById(id); if (el) el.remove();
+      });
       var br = ws.allyBreak||{};
       if (br.loserAllyIds && br.loserAllyIds.indexOf(myNation) !== -1) {
         _wsShowAllyBreakPopup(myNation, br, ws, code);
@@ -4737,7 +4825,7 @@ window._fbSetupViewerSummitListener = function(code) {
         showToastMsg('🕊 '+ws.nameA+' & '+ws.nameB+' both stood down!');
       }
     }
-  });
+  } // end _wsHandlePhase
 
 // ── Helper: Declaration choice HTML ────────────────────────────────────
 function _wsDeclarationHtml(mySide, oppNat, myNat, ws, code) {
@@ -4764,14 +4852,18 @@ function _wsDeclarationHtml(mySide, oppNat, myNat, ws, code) {
 }
 
 // ── Helper: Awaiting other nation HTML ─────────────────────────────────
-function _wsAwaitingOtherHtml(myDecision, ws) {
+function _wsAwaitingOtherHtml(myDecision, ws, hostDecided) {
   var col = myDecision ? '#ef4444' : '#10b981';
   var label = myDecision ? 'WAR DECLARED' : 'STANDING DOWN';
   var icon = myDecision ? '&#x2694;&#xfe0f;' : '&#x1f54a;';
+  var hostNote = hostDecided
+    ? '<div style="margin-bottom:12px;padding:5px 12px;border-radius:6px;background:rgba(34,211,238,0.08);border:1px solid rgba(34,211,238,0.25);font-family:Orbitron,sans-serif;font-size:0.45rem;font-weight:700;color:#22d3ee;letter-spacing:1px;">&#x1f3ae; DECIDED BY HOST ON YOUR BEHALF</div>'
+    : '';
   return '<div style="max-width:420px;text-align:center;padding:20px;">'
     +'<div style="font-size:2.5rem;margin-bottom:12px;">'+icon+'</div>'
     +'<div style="font-family:Orbitron,sans-serif;font-size:0.82rem;font-weight:900;color:'+col+';letter-spacing:2px;margin-bottom:8px;">'+label+'</div>'
-    +'<div style="font-size:0.62rem;color:rgba(255,255,255,0.4);margin-bottom:12px;">Decision sent to the host. Awaiting host confirmation and other nation\'s choice.</div>'
+    + hostNote
+    +'<div style="font-size:0.62rem;color:rgba(255,255,255,0.4);margin-bottom:12px;">Decision recorded. Awaiting host confirmation and other nation\'s choice.</div>'
     +'<div style="padding:10px 16px;border-radius:9px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);font-size:0.58rem;color:rgba(255,255,255,0.3);margin-bottom:18px;">&#x23f3; Awaiting other nation\'s decision...</div>'
     +'<button onclick="window._wsEscape()" style="padding:8px 22px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.35);font-size:0.55rem;font-family:Orbitron,sans-serif;cursor:pointer;letter-spacing:1px;">&#x2715; EXIT SCREEN</button>'
     +'</div>';
@@ -4827,6 +4919,58 @@ function _wsShowAllyChoicePopup(myNat, natA, natB, ws, code) {
     +'</div>';
   document.body.appendChild(div);
 }
+
+// ── Viewer: Use Policy Card button handler ───────────────────────────────
+window._fbViewerUsePolicyCard = function(cityId, cardId) {
+  if (!cardId || !cityId) return;
+  if (usedPolicyCards.has(cardId)) {
+    showToastMsg && showToastMsg('⚠️ This card has already been used.');
+    return;
+  }
+  var city = CITIES.find(function(c){ return c.id === cityId; });
+  var card = city ? (POLICY_CARDS[cityId]||[]).find(function(c){ return c.id === cardId; }) : null;
+  if (!card) return;
+
+  // Mark used immediately on this device so the button greys out right away
+  usedPolicyCards.add(cardId);
+  savePolicyPicks && savePolicyPicks();
+  renderViewerPage && renderViewerPage();
+
+  // Show activation confirmation popup on this device
+  var existing = document.getElementById('viewerPolicyActivated');
+  if (existing) existing.remove();
+  var col = card.red ? '#ef4444' : '#818cf8';
+  var popup = document.createElement('div');
+  popup.id = 'viewerPolicyActivated';
+  popup.style.cssText = 'position:fixed;inset:0;z-index:9200;background:rgba(5,8,15,0.97);display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;backdrop-filter:blur(12px);animation:egFadeIn 0.3s ease-out;';
+  popup.innerHTML = '<div style="max-width:400px;width:90%;text-align:center;padding:24px;">'
+    +'<div style="font-size:2.8rem;margin-bottom:10px;filter:drop-shadow(0 0 18px '+col+'80);">&#x1f4dc;</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.8rem;font-weight:900;color:'+col+';letter-spacing:3px;margin-bottom:10px;">POLICY CARD ACTIVATED</div>'
+    +'<div style="font-size:0.75rem;font-weight:700;color:#e2e8f0;margin-bottom:6px;">'+card.name+'</div>'
+    +'<div style="font-size:0.6rem;color:rgba(255,255,255,0.45);line-height:1.6;margin-bottom:14px;">'+card.desc+'</div>'
+    +'<div style="padding:7px 14px;border-radius:7px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);font-family:Orbitron,sans-serif;font-size:0.45rem;font-weight:700;color:rgba(239,68,68,0.7);letter-spacing:1px;margin-bottom:18px;">CARD CANNOT BE USED AGAIN</div>'
+    +'<button onclick="document.getElementById(\'viewerPolicyActivated\').remove()" style="padding:10px 28px;border-radius:9px;border:2px solid '+col+'50;background:'+col+'12;color:'+col+';font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:900;letter-spacing:1px;cursor:pointer;">&#x2713; GOT IT</button>'
+    +'</div>';
+  document.body.appendChild(popup);
+  setTimeout(function(){ var e=document.getElementById('viewerPolicyActivated'); if(e)e.remove(); }, 10000);
+
+  // Push to Firebase — host listener marks it used and shows the host-side popup
+  if (_fbDB && window._fb && window._fb.code) {
+    _fbDB.ref('games/'+window._fb.code+'/events/policyCardUsed').set({
+      ts:        Date.now(),
+      cardId:    cardId,
+      cardName:  card.name,
+      cityId:    cityId,
+      cityName:  city ? city.name  : cityId,
+      cityIcon:  city ? city.icon  : '&#x1f3d9;',
+      cityColor: city ? city.color : '#818cf8',
+      source:    'viewer',
+      cardIsRed: !!card.red,
+    }).catch(function() {
+      showToastMsg && showToastMsg('&#x26a0;&#xfe0f; Could not reach host — try again.');
+    });
+  }
+};
 
 // ── Helper: War result popup ────────────────────────────────────────────
 function _wsShowResultPopup(r, myNation) {
@@ -5033,10 +5177,12 @@ window._wsEscape = function() {
 
 
   // Post-war aid available — show "Request Aid" button on loser's device
+  // Only show for recent events (last 30 min) to avoid stale post-war aid re-appearing
   var lastAidAvailableTs = 0;
   _fbDB.ref('games/'+code+'/events/postWarAidAvailable').on('value', function(snap) {
     var ev = snap.val();
     if (!ev || ev.ts <= lastAidAvailableTs) return;
+    if (Date.now() - ev.ts > 30 * 60 * 1000) return; // ignore events older than 30 min
     lastAidAvailableTs = ev.ts;
     if (window._fb.nation === ev.loserId) {
       _fbShowViewerAidRequestButton(ev, code);
@@ -5049,11 +5195,14 @@ window._wsEscape = function() {
     var ev = snap.val();
     if (!ev || ev.ts <= lastAidReqTs) return;
     lastAidReqTs = ev.ts;
-    if (window._fb.nation === ev.targetId) {
+    var myNation2 = window._fb.nation;
+    // Only the TARGET nation sees the accept/deny popup
+    if (myNation2 === ev.targetId) {
       _fbShowViewerAidPrompt(ev, code);
     }
-    // Non-targeted nations see a toast
-    if (window._fb.nation && window._fb.nation !== ev.loserId && window._fb.nation !== ev.targetId) {
+    // Bystander toast — but NOT during active war session (suppress noisy mid-war aid popups)
+    var warActive = typeof _ws_phase !== 'undefined' && _ws_phase && _ws_phase !== 'done' && _ws_phase !== 'stood_down';
+    if (!warActive && myNation2 && myNation2 !== ev.loserId && myNation2 !== ev.targetId) {
       showToastMsg('🆘 '+ev.loserName+' is requesting aid from '+ev.targetName+'...');
     }
   });
@@ -5235,6 +5384,10 @@ window._wsEscape = function() {
     var ev = snap.val();
     if (!ev || ev.ts <= _lastAllianceEnactedTs) return;
     _lastAllianceEnactedTs = ev.ts;
+    // Suppress alliance popups while a war session is actively in progress (phases: declaration, awaiting_other, ally_decision)
+    // They fire from processAllianceRules during applyRound and clutter the war UI
+    var warPhase = typeof _ws_phase !== 'undefined' ? _ws_phase : null;
+    if (warPhase && warPhase !== 'result' && warPhase !== 'ally_break' && warPhase !== 'stood_down' && warPhase !== 'done') return;
     var myNation = window._fb.nation;
     var myRules  = (ev.rules||[]).filter(function(r) {
       return r.donorId === myNation || r.recipientId === myNation;
@@ -5350,11 +5503,15 @@ window._wsEscape = function() {
   var _lastTradeEnactedTs = 0;
   _fbDB.ref('games/'+code+'/events/tradeEnacted').on('value', function(snap) {
     var ev = snap.val();
-    if (!ev || ev.ts < _joinedAt || ev.ts <= _lastTradeEnactedTs) return;
+    if (!ev || ev.ts <= _lastTradeEnactedTs) return;
+    // Skip if this trade is older than 5 minutes (stale from before we joined)
+    if (Date.now() - ev.ts > 5 * 60 * 1000) {
+      _lastTradeEnactedTs = ev.ts; // mark as seen so we don't show it later
+      return;
+    }
     _lastTradeEnactedTs = ev.ts;
     var myNation = window._fb.nation;
     if (myNation !== ev.fromId && myNation !== ev.toId) {
-      // Bystander toast
       showToastMsg && showToastMsg('🤝 Trade: '+ev.fromCityName+' ⇄ '+ev.toCityName);
       return;
     }
@@ -5423,19 +5580,18 @@ window._wsEscape = function() {
     if (!ev || ev.ts < _joinedAt - 3000 || ev.ts <= _lastHostPageTs) return;
     _lastHostPageTs = ev.ts;
 
-    var myNation   = window._fb.nation;
-    var myRoleId   = null;
-    var myName     = null;
-    // Determine if this page is for me
-    var isForMe = false;
+    var myNation = window._fb.nation;
+    var isForMe  = false;
+
     if (ev.type === 'all') {
       isForMe = true;
     } else if (ev.type === 'nation') {
       isForMe = myNation === ev.cityId;
     } else if (ev.type === 'role') {
-      isForMe = true; // Role pages broadcast to all nations — every team needs to know who to send
+      // Only show to nations that actually have a member assigned to this role
+      var myRoles = roleAssignments[myNation] || {};
+      isForMe = Object.values(myRoles).indexOf(ev.roleId) !== -1;
     } else if (ev.type === 'person') {
-      // Check if this viewer's assigned player matches
       isForMe = myNation === ev.personCityId;
     }
 
@@ -5535,7 +5691,7 @@ window._wsEscape = function() {
   // Game ended — only show if event happened after we joined
   _fbDB.ref('games/'+code+'/events/gameEnded').on('value', function(snap) {
     var ev = snap.val();
-    if (!ev || ev.ts < _joinedAt) return;
+    if (!ev || ev.ts < _persistentLookback) return;
     _fbShowViewerGameEndedCelebration(ev, window._fb.nation);
   });
 
@@ -5548,7 +5704,7 @@ window._wsEscape = function() {
       if (existing) existing.remove();
       return;
     }
-    if (ev.ts < _joinedAt || ev.ts <= lastNationCardPickTs) return;
+    if (ev.ts < _persistentLookback || ev.ts <= lastNationCardPickTs) return;
     lastNationCardPickTs = ev.ts;
     var myNation = window._fb.nation;
     if (!myNation) return;
@@ -5571,9 +5727,9 @@ window._wsEscape = function() {
       if (!action || !optId) return;
 
       // Ensure state exists
-      if (!cityCardPicks[currentRound]) cityCardPicks[currentRound] = {};
-      if (!cityCardPicks[currentRound][nid]) cityCardPicks[currentRound][nid] = { selected: new Set(), eliminated: new Set() };
-      var st = cityCardPicks[currentRound][nid];
+      if (!cityCardPicks['game']) cityCardPicks['game'] = {};
+      if (!cityCardPicks['game'][nid]) cityCardPicks['game'][nid] = { selected: new Set(), eliminated: new Set() };
+      var st = cityCardPicks['game'][nid];
       if (!(st.selected   instanceof Set)) st.selected   = new Set(st.selected   ? [].concat(st.selected)   : []);
       if (!(st.eliminated instanceof Set)) st.eliminated = new Set(st.eliminated ? [].concat(st.eliminated) : []);
 
@@ -5598,7 +5754,7 @@ window._wsEscape = function() {
       if (existing) existing.remove();
       return;
     }
-    if (ev.ts < _joinedAt || ev.ts <= lastPolicyPickTs) return;
+    if (ev.ts < _persistentLookback || ev.ts <= lastPolicyPickTs) return;
     lastPolicyPickTs = ev.ts;
     var myNation = window._fb.nation;
     if (!myNation) return;
@@ -6782,35 +6938,13 @@ window._fbViewerConfirmNationCard = function() {
           +'<div style="font-family:Orbitron,sans-serif;font-size:0.78rem;font-weight:900;color:'+col+';letter-spacing:2px;margin-bottom:8px;">'+label+'</div>'
           +'<div style="font-size:0.62rem;color:rgba(255,255,255,0.4);margin-bottom:16px;">Sent to host successfully.</div>'
           +(nextPhase <= 3
-            ? '<div style="font-size:0.6rem;color:rgba(255,255,255,0.3);">Loading phase '+nextPhase+' of 3…</div>'
+            ? '<div style="font-size:0.6rem;color:rgba(255,255,255,0.3);">Phase '+nextPhase+' of 3 — wait for the host to send the next phase.</div>'
             : '<div style="font-size:0.6rem;color:rgba(255,255,255,0.3);">All phases complete — well done!</div>')
           +'</div>';
       }
 
-      if (nextPhase <= 3) {
-        // Re-open picker for next phase with updated card state
-        var capturedSt = { code: st.code, myNation: st.myNation, selectedOptId: st.selectedOptId, action: st.action };
-        setTimeout(function() {
-          _fbDB.ref('games/'+capturedSt.code+'/events/nationCardPickingOpen').once('value').then(function(freshSnap) {
-            var freshEv = freshSnap.val();
-            if (!freshEv) { if (div && div.parentNode) div.remove(); return; }
-            if (!freshEv.phaseInfo) freshEv.phaseInfo = {};
-            freshEv.phaseInfo[capturedSt.myNation] = nextPhase;
-            // Reflect this pick/eliminate in the card options
-            if (freshEv.cardData && freshEv.cardData[capturedSt.myNation]) {
-              freshEv.cardData[capturedSt.myNation].options = freshEv.cardData[capturedSt.myNation].options.map(function(o) {
-                if (o.id !== capturedSt.selectedOptId) return o;
-                return Object.assign({}, o, capturedSt.action === 'eliminate' ? { eliminated: true } : { selected: true });
-              });
-            }
-            window._vncState = null;
-            if (div && div.parentNode) div.remove();
-            window._fbShowViewerNationCardPicker(freshEv, capturedSt.code, capturedSt.myNation);
-          }).catch(function() { if (div && div.parentNode) div.remove(); });
-        }, 1500);
-      } else {
-        setTimeout(function() { if (div && div.parentNode) div.remove(); }, 3000);
-      }
+      // Close the picker — host will send the next phase when they click "Pick Card" again
+      setTimeout(function() { if (div && div.parentNode) div.remove(); }, 2500);
     }
   }).catch(function() {
     showToastMsg('⚠️ Could not send — try again');
@@ -7432,7 +7566,7 @@ window.fbToggleViewers = function() {
       <span style="font-size:2rem;">⚡</span>
       <div>
         <div style="font-family:'Orbitron',sans-serif;font-size:0.82rem;font-weight:900;color:#ef4444;letter-spacing:2px;">SYNAPSE TECH TAX</div>
-        <div style="font-size:0.57rem;color:rgba(255,255,255,0.35);margin-top:2px;">1 Capital per minute of online research • Synapse cannot pay itself</div>
+        <div id="techTaxRateLabel" style="font-size:0.57rem;color:rgba(255,255,255,0.35);margin-top:2px;">1 Capital per minute of online research • Synapse cannot pay itself</div>
       </div>
     </div>
 
@@ -9969,6 +10103,14 @@ function openTechTaxModal() {
   _techTaxSelectedNation = null;
   document.getElementById('techTaxModal').style.display = 'flex';
   document.getElementById('techTaxMinutes').value = 1;
+  // Update rate label based on whether sc-p4 is active
+  var rateLabel = document.getElementById('techTaxRateLabel');
+  if (rateLabel) {
+    var rate = getTechTaxRate();
+    rateLabel.innerHTML = rate > 1
+      ? '<span style="color:#f59e0b;font-weight:700;">⚡ Era of Expenses active — <strong>' + rate + ' Capital/min</strong></span> • Synapse cannot pay itself'
+      : '1 Capital per minute of online research • Synapse cannot pay itself';
+  }
   const grid = document.getElementById('techTaxNationGrid');
   grid.innerHTML = CITIES.filter(function(c){return c.id!=='synapse-city';}).map(function(c){
     return '<div id="techTaxCard_'+c.id+'" onclick="selectTechTaxNation(\'' +c.id+ '\')" style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:9px;border:1px solid '+c.color+'30;background:'+c.color+'06;cursor:pointer;transition:all 0.15s;"><span style="font-size:1.2rem;">'+c.icon+'</span><span style="font-family:Orbitron,sans-serif;font-size:0.6rem;font-weight:800;color:'+c.color+';">'+c.name+'</span></div>';
@@ -9994,14 +10136,23 @@ function adjustTechTaxMinutes(delta) {
   updateTechTaxPreview();
 }
 
+// Returns 1 normally; 2 if Synapse's "Era of Expenses" (sc-p4) is active
+function getTechTaxRate() {
+  return policyPicks && policyPicks['synapse-city'] === 'sc-p4' ? 2 : 1;
+}
+
 function updateTechTaxPreview() {
   var el      = document.getElementById('techTaxPreview');
   var minutes = parseInt(document.getElementById('techTaxMinutes')?.value)||1;
   if (!_techTaxSelectedNation) { el.innerHTML='Select a nation and enter minutes'; return; }
-  var nation  = CITIES.find(function(c){return c.id===_techTaxSelectedNation;});
+  var nation   = CITIES.find(function(c){return c.id===_techTaxSelectedNation;});
+  var rate     = getTechTaxRate();
+  var capital  = minutes * rate;
+  var rateNote = rate > 1 ? ' <span style="font-size:0.5rem;color:#f59e0b;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:4px;padding:1px 5px;font-family:Orbitron,sans-serif;">Era of Expenses: '+rate+'×</span>' : '';
   el.innerHTML = '<strong style="color:'+nation?.color+'">'+nation?.icon+' '+nation?.name+'</strong> will pay '
-    + '<strong style="color:#ef4444">-'+minutes+' Capital</strong> to '
-    + '<strong style="color:#ef4444">⚡ Synapse City</strong> for <strong>'+minutes+' min</strong> of online research';
+    + '<strong style="color:#ef4444">−'+capital+' Capital</strong>'
+    + rateNote
+    + ' to <strong style="color:#ef4444">⚡ Synapse City</strong> for <strong>'+minutes+' min</strong> of online research';
 }
 
 function updateTechTaxTotals() {
@@ -10019,7 +10170,7 @@ function updateTechTaxTotals() {
 function applyTechTax() {
   if (!_techTaxSelectedNation) { showToastMsg('Select a nation first'); return; }
   var minutes  = parseInt(document.getElementById('techTaxMinutes')?.value)||1;
-  var capital  = minutes;
+  var capital  = minutes * getTechTaxRate();
   var payerId  = _techTaxSelectedNation;
   var payer    = CITIES.find(function(c){return c.id===payerId;});
   var payerBefore   = safeGetVal(payerId, 'capital');
@@ -11680,7 +11831,51 @@ function savePolicyCardEdit() {
 function selectPolicyCard(cityId, cardId) {
   // Toggle — clicking the already-selected card deselects it
   policyPicks[cityId] = policyPicks[cityId] === cardId ? null : cardId;
+
+  // sc-p4 "Era of Expenses" auto-enacts on selection — no "Use Card" needed
+  if (cardId === 'sc-p4' && policyPicks[cityId] === 'sc-p4') {
+    _autoEnactEraOfExpenses();
+  }
+
   renderPolicyPickerGrid();
+}
+
+function _autoEnactEraOfExpenses() {
+  // Mark as used immediately
+  usedPolicyCards.add('sc-p4');
+  savePolicyPicks();
+
+  // Apply -5% political (red card)
+  const before = politicalRanks['synapse-city'] ?? 50;
+  politicalRanks['synapse-city'] = Math.max(0, before - 5);
+  const delta = politicalRanks['synapse-city'] - before;
+  if (delta) {
+    logPolitical({ cityId: 'synapse-city', delta, newVal: politicalRanks['synapse-city'], source: 'Red Policy Card', sourceIcon: '🃏', detail: 'Era of Expenses selected (−5% political)' });
+    savePoliticalRanks();
+  }
+
+  // Update tech tax modal label and preview to show ×2 rate
+  var rateLabel = document.getElementById('techTaxRateLabel');
+  if (rateLabel) {
+    rateLabel.innerHTML = '<span style="color:#f59e0b;font-weight:800;">Era of Expenses active — <strong>2 Capital/min</strong></span>';
+  }
+  updateTechTaxPreview && updateTechTaxPreview();
+
+  // Push policyCardUsed to Firebase so viewer devices see the notification
+  if (_fbDB && window._fb && window._fb.code) {
+    _fbDB.ref('games/' + window._fb.code + '/events/policyCardUsed').set({
+      ts: Date.now(),
+      cardId: 'sc-p4',
+      cardName: 'Era of Expenses',
+      cityId: 'synapse-city',
+      source: 'host-auto',
+    }).catch(function(){});
+  }
+
+  save();
+  renderPolicyPickerGrid();
+  showToastMsg('⚡ Era of Expenses enacted — tech tax is now 2 Capital/min for all nations!');
+  playSuccess();
 }
 
 function confirmPolicyCards() {
@@ -12096,58 +12291,33 @@ function resolveNewLeadership(accepted) {
       roleAssignments[fromId][toMayorName] = 'mayor';
     }
 
-    // ACCEPT: +3% political to both → sync each nation's relations proportionally
-    const polDeltaAccept = 3;
-    [fromId, toId].forEach(cid => {
-      const before = politicalRanks[cid] ?? 50;
-      politicalRanks[cid] = Math.min(100, before + polDeltaAccept);
-      const actual = politicalRanks[cid] - before;
-      if (actual !== 0) syncRelationsFromPolitical(cid, actual); // political gain → all relations adjust
-    });
-    savePoliticalRanks();
-
-    // Direct bilateral relation boost for the two agreeing nations (+8%)
+    // ACCEPT: +8% bilateral relations only — no political change
     adjustRelation(fromId, toId, 8);
     saveRelations(); syncPoliticalFromRelations();
 
-    roundHistory.unshift({ round:-1, changes:[], label:`🏛️ Mayor Trade Accepted: ${fromCity?.name} ⇄ ${toCity?.name} (+3% political each, +8% bilateral relations)`, icon:'🏛️' });
+    roundHistory.unshift({ round:-1, changes:[], label:`🏛️ Mayor Trade Accepted: ${fromCity?.name} ⇄ ${toCity?.name} (+8% bilateral relations)`, icon:'🏛️' });
     playSuccess?.();
-    showToastMsg?.(`🏛️ Mayor trade accepted! +3% political for both nations, +8% relations.`);
+    showToastMsg?.(`🏛️ Mayor trade accepted! +8% bilateral relations.`);
 
   } else {
-    // DENY: denying city (toId) loses capital and political
-    // Proposing city (fromId) loses a small political hit from the insult
+    // DENY: denying city (toId) loses −20 Capital, −5% bilateral relations — no political hit
     const capBefore = safeGetVal(toId, 'capital');
     safeSetVal(toId, 'capital', capBefore - 20);
     const capAfter = safeGetVal(toId, 'capital');
 
-    // Denying city: −3% political → cascade to their relations
-    const toPolBefore = politicalRanks[toId] ?? 50;
-    politicalRanks[toId] = Math.max(0, toPolBefore - 3);
-    const toActualDelta = politicalRanks[toId] - toPolBefore;
-    if (toActualDelta !== 0) { syncRelationsFromPolitical(toId, toActualDelta); logPolitical({ cityId: toId, delta: toActualDelta, newVal: politicalRanks[toId], source: 'Trade Refused', sourceIcon: '❌', detail: `Refused leadership trade from ${fromCity?.name||'?'} (−3%)` }); }
-
-    // Proposing city: −1% political for being refused (embarrassment)
-    const fromPolBefore = politicalRanks[fromId] ?? 50;
-    politicalRanks[fromId] = Math.max(0, fromPolBefore - 1);
-    const fromActualDelta = politicalRanks[fromId] - fromPolBefore;
-    if (fromActualDelta !== 0) { syncRelationsFromPolitical(fromId, fromActualDelta); logPolitical({ cityId: fromId, delta: fromActualDelta, newVal: politicalRanks[fromId], source: 'Trade Refused', sourceIcon: '❌', detail: `Proposal refused by ${toCity?.name||'?'} (−1%)` }); }
-
-    savePoliticalRanks();
-
-    // Direct bilateral relation hit for the refusal (−10%)
-    adjustRelation(fromId, toId, -10);
+    // −5% bilateral relations
+    adjustRelation(fromId, toId, -5);
     saveRelations(); syncPoliticalFromRelations();
 
     roundHistory.unshift({ round:-1, changes:[{ cityId:toId, resourceId:'capital', valueBefore:capBefore, valueAfter:capAfter, delta:-20, explanation:'New Leadership: Mayor Trade Denied' }],
-      label:`❌ Mayor Trade Denied by ${toCity?.name} (−20 Capital, −3% political, −10% bilateral relations; ${fromCity?.name} −1% political)`, icon:'❌' });
+      label:`❌ Mayor Trade Denied by ${toCity?.name} (−20 Capital, −5% bilateral relations)`, icon:'❌' });
 
     try {
       const ctx = new (window.AudioContext||window.webkitAudioContext)();
       [180,170,160].forEach((f,i)=>{const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.type='sawtooth';o.frequency.value=f;const t=ctx.currentTime+i*0.12;g.gain.setValueAtTime(0.1,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.5);o.start(t);o.stop(t+0.55);});
     } catch(e){}
 
-    showToastMsg?.(`❌ Mayor trade denied — ${toCity?.name} −3% political, −10% bilateral relations.`);
+    showToastMsg?.(`❌ Mayor trade denied — ${toCity?.name} loses 20 Capital, −5% bilateral relations.`);
   }
 
   saveDraft(); save();
@@ -12717,6 +12887,84 @@ function playPageSound() {
   } catch(e){}
 }
 
+
+// ── Viewer: Host Page / Call Popup ──────────────────────────────────────
+// Shown on device screens when the host pages a role, nation, or person.
+window._showHostPagePopup = function(ev) {
+  var existing = document.getElementById('hostPagePopup');
+  if (existing) existing.remove();
+
+  // Play the intercom chime on viewer too
+  try {
+    var ctx = new (window.AudioContext||window.webkitAudioContext)();
+    [[880,0],[660,0.22],[880,0.44],[660,0.66],[1047,0.88]].forEach(function(pair) {
+      var freq=pair[0], t2=pair[1];
+      var o=ctx.createOscillator(), g=ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type='square'; o.frequency.value=freq;
+      var t=ctx.currentTime+t2;
+      g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.18,t+0.02);
+      g.gain.exponentialRampToValueAtTime(0.001,t+0.18); o.start(t); o.stop(t+0.2);
+    });
+  } catch(e){}
+
+  // Build target label with icon
+  var targetIcon = '📢';
+  var targetDesc = ev.label || 'All Nations';
+  if (ev.type === 'role') { targetIcon = '👔'; }
+  else if (ev.type === 'nation') { targetIcon = '🏙️'; }
+  else if (ev.type === 'person') { targetIcon = '👤'; }
+
+  var div = document.createElement('div');
+  div.id  = 'hostPagePopup';
+  div.style.cssText = 'position:fixed;inset:0;z-index:9300;background:rgba(5,8,15,0.97);'
+    +'display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;'
+    +'backdrop-filter:blur(14px);animation:egFadeIn 0.3s ease-out;';
+
+  div.innerHTML = '<div style="max-width:440px;width:90%;text-align:center;padding:32px 24px;">'
+    // Pulsing icon
+    +'<div style="font-size:3.5rem;margin-bottom:14px;animation:egGlow 1.2s ease-in-out infinite;'
+      +'filter:drop-shadow(0 0 22px rgba(251,191,36,0.7));">📢</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.95rem;font-weight:900;color:#fbbf24;'
+      +'letter-spacing:4px;margin-bottom:6px;text-shadow:0 0 20px rgba(251,191,36,0.5);">ATTENTION!</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.5rem;font-weight:700;letter-spacing:3px;'
+      +'color:rgba(251,191,36,0.5);margin-bottom:22px;">HOST IS PAGING YOU</div>'
+
+    // Target badge
+    +'<div style="display:inline-flex;align-items:center;gap:8px;padding:8px 18px;border-radius:20px;'
+      +'border:1px solid rgba(251,191,36,0.4);background:rgba(251,191,36,0.08);margin-bottom:20px;">'
+      +'<span style="font-size:1.1rem;">'+targetIcon+'</span>'
+      +'<span style="font-family:Orbitron,sans-serif;font-size:0.62rem;font-weight:800;color:#fbbf24;">'
+        +targetDesc
+      +'</span>'
+    +'</div>'
+
+    // Instruction line
+    +'<div style="font-size:0.72rem;color:rgba(255,255,255,0.6);line-height:1.7;margin-bottom:'+(ev.message?'14':'22')+'px;">'
+      +'Please follow the instructions from the host urgently.'
+    +'</div>'
+
+    // Custom message (if any)
+    +(ev.message
+      ? '<div style="padding:12px 16px;border-radius:10px;border:1px solid rgba(251,191,36,0.25);'
+          +'background:rgba(251,191,36,0.06);margin-bottom:22px;font-size:0.7rem;'
+          +'color:rgba(255,200,80,0.85);font-style:italic;line-height:1.5;">'
+          +'\u201c'+ev.message+'\u201d'
+        +'</div>'
+      : '')
+
+    // Dismiss button
+    +'<button onclick="document.getElementById(\'hostPagePopup\').remove()" style="'
+      +'padding:12px 32px;border-radius:10px;cursor:pointer;'
+      +'border:2px solid rgba(251,191,36,0.5);background:rgba(251,191,36,0.12);color:#fbbf24;'
+      +'font-family:Orbitron,sans-serif;font-size:0.65rem;font-weight:900;letter-spacing:2px;'
+      +'transition:all 0.15s;">&#x2713; ACKNOWLEDGED</button>'
+  +'</div>';
+
+  document.body.appendChild(div);
+  // Auto-dismiss after 30 seconds
+  setTimeout(function(){ var e=document.getElementById('hostPagePopup'); if(e)e.remove(); }, 30000);
+};
 
 // ── Viewer: Trade Result Popup ───────────────────────────────────────────
 // Shown on both involved nation devices after host confirms a trade.
@@ -13400,7 +13648,8 @@ function recordWarDecision(side, wantsWar) {
   if (!_ws) return;
   _ws.decisions[side] = wantsWar;
   _wsApplyHostDecisionUI(side, wantsWar);
-  _wsPush({ decisions: _ws.decisions });
+  // Push decisions update — viewer declaration screens re-render to show host decision
+  _wsPush({ decisions: _ws.decisions, decisionsSource: 'host' });
 
   // Check if both decided
   if (_ws.decisions.A !== null && _ws.decisions.B !== null) {
@@ -14287,17 +14536,16 @@ function _updateSummitButtonStates() {
   var alreadyUsed = myNationId && window._summitUsedNations.has(myNationId);
   var active = window._summitIsActive;
 
-  // Host button
+  // Host button — only greys out while a summit is actively running, never permanently
   var hostBtn = document.getElementById('btnGlobalSummit');
   if (hostBtn) {
-    var hostBlocked = active;
-    hostBtn.disabled = hostBlocked;
-    hostBtn.style.opacity = hostBlocked ? '0.4' : '1';
-    hostBtn.style.cursor  = hostBlocked ? 'not-allowed' : 'pointer';
-    hostBtn.title = hostBlocked ? 'A summit is currently in session' : '';
+    hostBtn.disabled = active;
+    hostBtn.style.opacity = active ? '0.4' : '1';
+    hostBtn.style.cursor  = active ? 'not-allowed' : 'pointer';
+    hostBtn.title = active ? 'A summit is currently in session — wait for it to end' : '';
   }
 
-  // Viewer button
+  // Viewer button — stays locked once used per game
   var viewerBtn = document.getElementById('btnViewerSummit');
   if (viewerBtn) {
     var blocked = active || alreadyUsed;
@@ -14319,12 +14567,13 @@ function _updateSummitButtonStates() {
   }
 }
 
-function callGlobalSummit() {
+function callGlobalSummit(fromAnnouncement) {
   const overlay = document.getElementById('globalSummitOverlay');
   if (!overlay) return;
 
-  // Block if a summit is already in progress
-  if (window._summitIsActive) {
+  // Block if already in session — UNLESS we're being called from showSummitAnnouncement
+  // (which fires on all devices after the 4s countdown, by which time _summitIsActive is true)
+  if (window._summitIsActive && !fromAnnouncement) {
     showToastMsg('⚠️ A Global Summit is already in session — wait for it to end.');
     return;
   }
@@ -15078,8 +15327,8 @@ function checkConditionalAllianceTriggers() {
 
   if (!nowMet.length) return;
 
-  // Show popup on host immediately
-  _showHostConditionAlertPopup(nowMet);
+  // Show popup on host immediately (pre-round warning — not yet applied)
+  _showHostConditionAlertPopup(nowMet, currentRound, false);
 
   // Push to Firebase so donor and recipient devices also get the popup
   if (_fbDB && window._fb && window._fb.code) {
@@ -15092,8 +15341,8 @@ function checkConditionalAllianceTriggers() {
   }
 }
 
-// ── Host popup: condition alert ───────────────────────────────────────
-function _showHostConditionAlertPopup(rules) {
+// ── Host popup: condition alert (also called from allianceEnacted listener) ──
+function _showHostConditionAlertPopup(rules, round, alreadyApplied) {
   var existing = document.getElementById('hostConditionAlertPopup');
   if (existing) existing.remove();
 
@@ -15160,9 +15409,11 @@ function _showHostConditionAlertPopup(rules) {
   div.innerHTML = '<div style="max-width:480px;width:93%;text-align:center;">'
     +'<div style="font-size:3rem;margin-bottom:12px;filter:drop-shadow(0 0 18px rgba(251,191,36,0.7));animation:timerFsPulse 0.8s ease-in-out infinite;">⚡</div>'
     +'<div style="font-family:Orbitron,sans-serif;font-size:0.88rem;font-weight:900;color:#fbbf24;letter-spacing:3px;margin-bottom:4px;">AID CONDITION MET</div>'
-    +'<div style="font-family:Orbitron,sans-serif;font-size:0.48rem;font-weight:700;color:rgba(251,191,36,0.4);letter-spacing:2px;margin-bottom:18px;">AUTOMATIC TRANSFER TRIGGERED</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.48rem;font-weight:700;color:rgba(251,191,36,0.4);letter-spacing:2px;margin-bottom:18px;">'+(alreadyApplied ? 'TRANSFER APPLIED — RESOURCES SENT' : 'AUTOMATIC TRANSFER TRIGGERED')+'</div>'
     + rulesHtml
-    +'<div style="font-size:0.52rem;color:rgba(255,255,255,0.25);margin-bottom:16px;">This transfer will be applied at the end of the current round.</div>'
+    +(alreadyApplied
+      ? '<div style="font-size:0.52rem;color:rgba(16,185,129,0.6);margin-bottom:16px;">✓ Resources have been transferred. Nation devices have been notified.</div>'
+      : '<div style="font-size:0.52rem;color:rgba(255,255,255,0.25);margin-bottom:16px;">Transfer will be applied at the end of the current round.</div>')
     +'<button onclick="document.getElementById(\'hostConditionAlertPopup\').remove()" style="'
       +'padding:11px 32px;border-radius:10px;cursor:pointer;'
       +'border:2px solid rgba(251,191,36,0.5);background:rgba(251,191,36,0.12);color:#fbbf24;'
@@ -15378,7 +15629,7 @@ function renderScoreboard() {
           return `<span class="city-member-chip">${name}${role?`<span class="city-member-role">${role.icon}</span>`:''}</span>`;
         }).join('')}</div>` : '';
 
-    const ccSt = (cityCardPicks?.[currentRound])?.[c.id];
+    const ccSt = (cityCardPicks?.['game'])?.[c.id];
     const pickedOpt = ccSt?.selected?.size
       ? (() => { for (const id of ccSt.selected) { const o = CITY_CARDS[c.id]?.options.find(x=>x.id===id); if(o) return o; } return null; })()
       : null;
@@ -15662,18 +15913,7 @@ const CARD_PICKS_SK = 'city-monitor-card-picks';
 
 let ccActiveCity = 'ironvale';
 
-function saveCityCardPicks() {
-  // Serialize sets to arrays
-  const serial = {};
-  for (const [rnd, cities] of Object.entries(cityCardPicks)) {
-    serial[rnd] = {};
-    for (const [cid, st] of Object.entries(cities)) {
-      serial[rnd][cid] = { selected: st.selected, eliminated: [...(st.eliminated||[])] };
-    }
-  }
-  try { localStorage.setItem(CARD_PICKS_SK, JSON.stringify(serial)); } catch {}
-  try { window.storage?.set?.(CARD_PICKS_SK, JSON.stringify(serial)).catch(()=>{}); } catch {}
-}
+
 
 function loadCityCardPicks() {
   try {
@@ -15681,12 +15921,12 @@ function loadCityCardPicks() {
     if (!s) return;
     const parsed = JSON.parse(s);
     cityCardPicks = {};
-    for (const [rnd, cities] of Object.entries(parsed)) {
-      cityCardPicks[rnd] = {};
+    for (const [key, cities] of Object.entries(parsed)) {
+      cityCardPicks[key] = {};
       for (const [cid, st] of Object.entries(cities)) {
-        cityCardPicks[rnd][cid] = {
-          selected:   new Set(st.selected   || []),
-          eliminated: new Set(st.eliminated || [])
+        cityCardPicks[key][cid] = {
+          selected:   new Set(Array.isArray(st.selected)   ? st.selected   : (st.selected   ? [st.selected]   : [])),
+          eliminated: new Set(Array.isArray(st.eliminated) ? st.eliminated : (st.eliminated ? [st.eliminated] : [])),
         };
       }
     }
@@ -15695,12 +15935,12 @@ function loadCityCardPicks() {
 
 function saveCityCardPicks() {
   const serial = {};
-  for (const [rnd, cities] of Object.entries(cityCardPicks)) {
-    serial[rnd] = {};
+  for (const [key, cities] of Object.entries(cityCardPicks)) {
+    serial[key] = {};
     for (const [cid, st] of Object.entries(cities)) {
-      serial[rnd][cid] = {
-        selected:   [...(st.selected   || [])],
-        eliminated: [...(st.eliminated || [])]
+      serial[key][cid] = {
+        selected:   [...(st.selected instanceof Set ? st.selected : new Set(st.selected || []))],
+        eliminated: [...(st.eliminated instanceof Set ? st.eliminated : new Set(st.eliminated || []))],
       };
     }
   }
@@ -15709,18 +15949,19 @@ function saveCityCardPicks() {
 }
 
 function getCCState(cityId) {
-  if (!cityCardPicks[currentRound]) cityCardPicks[currentRound] = {};
-  if (!cityCardPicks[currentRound][cityId]) {
-    cityCardPicks[currentRound][cityId] = { selected: new Set(), eliminated: new Set() };
+  // Nation card picks are game-wide (not per-round) — always use 'game' key
+  if (!cityCardPicks['game']) cityCardPicks['game'] = {};
+  if (!cityCardPicks['game'][cityId]) {
+    cityCardPicks['game'][cityId] = { selected: new Set(), eliminated: new Set() };
   }
-  const st = cityCardPicks[currentRound][cityId];
-  if (!(st.selected instanceof Set))   st.selected   = st.selected   ? new Set([st.selected])   : new Set();
+  const st = cityCardPicks['game'][cityId];
+  if (!(st.selected instanceof Set))   st.selected   = st.selected   ? new Set([...st.selected])   : new Set();
   if (!(st.eliminated instanceof Set)) st.eliminated = new Set(st.eliminated || []);
   return st;
 }
 
 function getCityCardEffects(cityId) {
-  const st = (cityCardPicks[currentRound] || {})[cityId];
+  const st = (cityCardPicks['game'] || {})[cityId];
   if (!st?.selected?.size) return {};
   const effects = {};
   for (const optId of st.selected) {
@@ -15774,14 +16015,24 @@ function openNationCardDevicePicker() {
     };
   });
 
-  _fbDB.ref('games/'+window._fb.code+'/events/nationCardPickingOpen').set({
-    ts:        Date.now(),
-    round:     currentRound,
-    phaseInfo,
-    cardData,
+  // Clear previous choices first so the listener doesn't re-trigger old picks
+  _fbDB.ref('games/'+window._fb.code+'/events/nationCardChoices').remove().then(function() {
+    _fbDB.ref('games/'+window._fb.code+'/events/nationCardPickingOpen').set({
+      ts:        Date.now(),
+      round:     currentRound,
+      phaseInfo,
+      cardData,
+    }).catch(function(){});
   }).catch(function(){});
-  _fbDB.ref('games/'+window._fb.code+'/events/nationCardChoices').remove().catch(function(){});
-  showToastMsg('📣 Nation card picker sent to all devices');
+
+  // Also reset the host's processed-picks tracker so re-sent choices register
+  _processedNationCardPicks && _processedNationCardPicks.clear();
+
+  // Show which phase is being sent
+  const phaseLabel = { 1:'Phase 1 — Pick a card', 2:'Phase 2 — Eliminate a card', 3:'Phase 3 — Pick final card' };
+  const phases = Object.values(phaseInfo);
+  const curPhase = phases.length ? Math.min(...phases) : 1;
+  showToastMsg('📣 '+( phaseLabel[curPhase] || 'Nation card picker')+' sent to all devices');
 }
 
 function closeNationCardDevicePicker() {
@@ -15809,7 +16060,7 @@ function renderCCCityTabs() {
   const el = document.getElementById('ccCityTabs');
   if (!el) return;
   el.innerHTML = CITIES.map(c => {
-    const st       = (cityCardPicks[currentRound] || {})[c.id];
+    const st       = (cityCardPicks['game'] || {})[c.id];
     const pickCount = st?.selected?.size || 0;
     const hasElim   = st?.eliminated?.size > 0;
     const isActive  = c.id === ccActiveCity;
@@ -16333,7 +16584,43 @@ function _applySnapshotToLive(snap) {
 
 // ── Fully undo the last applied round ────────────────────────────────
 // Restores all state to what it was just before that round was applied.
+function _showUndoConfirmPopup(round) {
+  var existing = document.getElementById('undoConfirmPopup');
+  if (existing) existing.remove();
+  var div = document.createElement('div');
+  div.id = 'undoConfirmPopup';
+  div.style.cssText = 'position:fixed;inset:0;z-index:9500;background:rgba(5,8,15,0.94);'
+    +'display:flex;align-items:center;justify-content:center;font-family:Sora,sans-serif;'
+    +'backdrop-filter:blur(12px);animation:egFadeIn 0.2s ease-out;';
+  div.innerHTML = '<div style="max-width:380px;width:90%;text-align:center;padding:28px 24px;'
+    +'background:rgba(15,20,35,0.98);border:1px solid rgba(239,68,68,0.35);border-radius:16px;'
+    +'box-shadow:0 0 40px rgba(239,68,68,0.15);">'
+    +'<div style="font-size:2.4rem;margin-bottom:10px;">↩</div>'
+    +'<div style="font-family:Orbitron,sans-serif;font-size:0.8rem;font-weight:900;color:#f87171;letter-spacing:2px;margin-bottom:8px;">UNDO ROUND '+round+'?</div>'
+    +'<div style="font-size:0.6rem;color:rgba(255,255,255,0.45);line-height:1.7;margin-bottom:20px;">'
+      +'This will revert all resource changes from Round '+round+'<br>'
+      +'and return to Round '+round+'. This cannot be re-done.'
+    +'</div>'
+    +'<div style="display:flex;gap:10px;justify-content:center;">'
+      +'<button onclick="document.getElementById(\'undoConfirmPopup\').remove()" style="'
+        +'padding:10px 22px;border-radius:9px;cursor:pointer;font-family:Orbitron,sans-serif;'
+        +'font-size:0.62rem;font-weight:700;letter-spacing:1px;border:1px solid rgba(255,255,255,0.15);'
+        +'background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.45);">CANCEL</button>'
+      +'<button onclick="document.getElementById(\'undoConfirmPopup\').remove();_doUndoRound();" style="'
+        +'padding:10px 22px;border-radius:9px;cursor:pointer;font-family:Orbitron,sans-serif;'
+        +'font-size:0.62rem;font-weight:900;letter-spacing:1px;border:2px solid rgba(239,68,68,0.6);'
+        +'background:rgba(239,68,68,0.15);color:#f87171;">↩ CONFIRM UNDO</button>'
+    +'</div>'
+  +'</div>';
+  document.body.appendChild(div);
+}
+
 function undoRound() {
+  if (maxAppliedRound === 0) return;
+  _showUndoConfirmPopup(maxAppliedRound);
+}
+
+function _doUndoRound() {
   if (maxAppliedRound === 0) return;
   const snap = snapshots[maxAppliedRound];
   if (!snap) return;
@@ -16376,13 +16663,9 @@ function changeRound(delta) {
       applyRound();
       return;
     } else {
-      // "−" on the live round → undo last applied round (with confirmation for safety)
+      // "−" on the live round → undo last applied round (with confirmation popup)
       if (maxAppliedRound === 0) return; // nothing to undo
-      if (confirm(`↩ Undo Round ${maxAppliedRound}?
-
-This will revert all resource changes from Round ${maxAppliedRound} and return to Round ${maxAppliedRound}.`)) {
-        undoRound();
-      }
+      _showUndoConfirmPopup(maxAppliedRound);
       return;
     }
   }
@@ -17136,6 +17419,14 @@ function executeTrade() {
   renderScoreboard();
   renderHistory();
   fb.style.display = 'none';
+
+  // Push tradeEnacted to Firebase immediately so all devices get the popup
+  // (also pushed in closeTradeAnim for confirmed trades, but this ensures it fires right away)
+  if (_fbDB && window._fb && window._fb.code) {
+    _fbDB.ref('games/'+window._fb.code+'/events/tradeEnacted').set(
+      Object.assign({ ts: Date.now() }, _tradePayload)
+    ).catch(function(){});
+  }
 
   showTradeAnim(fromCity, toCity, tradeDetails, fromScoreBefore, fromScoreAfter, toScoreBefore, toScoreAfter, taxDetails, { fromRate: taxRateForB, toRate: taxRateForA });
 }
@@ -19045,23 +19336,24 @@ function renderHistory() {
     const icon = entry.icon || (entry.round>0?'⚡':entry.round===-1?'🤝':'🎲');
     const label = entry.round > 0 ? `R${entry.round}` : entry.round===-1 ? 'Trade' : 'Event';
 
+    const changes = entry.changes || [];
     const div = document.createElement('div');
     div.className = 'history-entry';
     div.innerHTML = `
       <div class="history-entry-header" onclick="toggleHistoryEntry(this)">
         <span class="history-type-badge ${cls}">${icon} ${label}</span>
         <span class="history-summary">${entry.label}</span>
-        <span class="history-changes-count">${entry.changes.length} change${entry.changes.length!==1?'s':''}</span>
+        <span class="history-changes-count">${changes.length > 0 ? changes.length+' change'+(changes.length!==1?'s':'') : ''}</span>
         <span class="history-chevron">▼</span>
       </div>
-      <div class="history-details">
+      <div class="history-details" style="display:none;">
         ${entry.customItems ? `
           <div style="padding:6px 8px;margin-bottom:6px;border-radius:6px;
             background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);">
             <span style="font-size:0.58rem;color:#f59e0b;font-weight:600;">📦 Physical items: </span>
             <span style="font-size:0.62rem;color:rgba(255,255,255,0.8);">${entry.customItems}</span>
           </div>` : ''}
-        ${entry.changes.map(ch => {
+        ${changes.map(ch => {
           const city = CITIES.find(c=>c.id===ch.cityId);
           const res = RESOURCES.find(r=>r.id===ch.resourceId);
           const deltaClass = ch.delta > 0 ? 'delta-pos' : 'delta-neg';
@@ -19075,6 +19367,7 @@ function renderHistory() {
             <span class="hc-explanation">${ch.explanation||''}</span>
           </div>`;
         }).join('')}
+        ${changes.length === 0 ? '<div style="font-size:0.6rem;color:var(--text-muted);padding:2px 0;">No resource changes recorded.</div>' : ''}
       </div>
     `;
     entries.appendChild(div);
@@ -19084,10 +19377,9 @@ function renderHistory() {
 function toggleHistoryEntry(header) {
   const details = header.nextElementSibling;
   const chevron = header.querySelector('.history-chevron');
-  const isOpen = details.classList.contains('open');
-  details.classList.toggle('open', !isOpen);
+  const isOpen = details.style.display === 'flex';
   details.style.display = isOpen ? 'none' : 'flex';
-  chevron.classList.toggle('open', !isOpen);
+  if (chevron) chevron.style.transform = isOpen ? '' : 'rotate(180deg)';
 }
 
 // ════════════════════════════════════════════════════════
@@ -19442,6 +19734,80 @@ function addAllianceRule() {
     label,
     city_id: donorId,
   });
+
+  // ── Immediately enact one-time rules ──────────────────────────────────
+  // One-time rules fire right when confirmed — not at end of round.
+  if (oneTime) {
+    const rule = cityRules[cityRules.length - 1];
+
+    // Check condition if set
+    let conditionMet = true;
+    if (hasCondition && condResourceId) {
+      const condVal2 = data[recipientId]?.[condResourceId]?.value ?? 0;
+      switch (condOp) {
+        case '>':  conditionMet = condVal2 >  condVal; break;
+        case '>=': conditionMet = condVal2 >= condVal; break;
+        case '<':  conditionMet = condVal2 <  condVal; break;
+        case '<=': conditionMet = condVal2 <= condVal; break;
+        case '==': conditionMet = condVal2 === condVal; break;
+      }
+    }
+
+    if (conditionMet) {
+      // Apply the transfer
+      const donorBefore     = safeGetVal(donorId, resource_id);
+      const recipientBefore = safeGetVal(recipientId, resource_id);
+      safeSetVal(donorId,     resource_id, donorBefore     - amount);
+      safeSetVal(recipientId, resource_id, recipientBefore + amount);
+
+      // Political gains
+      const polGainDonor     = Math.min(15, Math.max(1, Math.round(amount / 5)));
+      const polGainRecipient = Math.min(8,  Math.max(1, Math.round(amount / 10)));
+      politicalRanks[donorId]     = Math.min(100, Math.round((politicalRanks[donorId]     ?? 50) + polGainDonor));
+      politicalRanks[recipientId] = Math.min(100, Math.round((politicalRanks[recipientId] ?? 50) + polGainRecipient));
+      logPolitical([
+        { cityId: donorId,     delta: polGainDonor,     newVal: politicalRanks[donorId],     source: 'One-Time Aid', sourceIcon: '🤝', detail: `Sent one-time aid: ${label}` },
+        { cityId: recipientId, delta: polGainRecipient, newVal: politicalRanks[recipientId], source: 'One-Time Aid', sourceIcon: '🤝', detail: `Received one-time aid: ${label}` },
+      ]);
+      savePoliticalRanks();
+      adjustRelation(donorId, recipientId, Math.min(10, Math.max(1, Math.round(amount / 3))));
+      saveRelations(); syncPoliticalFromRelations();
+
+      // Mark triggered
+      rule.triggered = true;
+
+      // History
+      roundHistory.unshift({ round: -1, changes: [
+        { cityId: donorId,     resourceId: resource_id, valueBefore: donorBefore,     valueAfter: donorBefore - amount,     delta: -amount, explanation: `One-time aid to ${recipient?.name}` },
+        { cityId: recipientId, resourceId: resource_id, valueBefore: recipientBefore, valueAfter: recipientBefore + amount, delta: amount,  explanation: `One-time aid from ${donor?.name}` },
+      ], label: `🤝 One-Time Aid: ${donor?.name} → ${recipient?.name} — ${amount} ${res?.name}`, icon: '🤝' });
+
+      // Push allianceEnacted to Firebase so all viewer devices show the popup
+      if (_fbDB && window._fb && window._fb.code) {
+        _fbDB.ref('games/' + window._fb.code + '/events/allianceEnacted').set({
+          ts:    Date.now(),
+          round: currentRound,
+          rules: [{
+            donorId,    donorName:    donor?.name,    donorIcon:    donor?.icon,    donorColor:    donor?.color,
+            recipientId, recipientName: recipient?.name, recipientIcon: recipient?.icon, recipientColor: recipient?.color,
+            resourceId: resource_id, resourceName: res?.name, resourceIcon: res?.icon,
+            amount,
+            oneTime: true,
+            polGainDonor,
+            polGainRecipient,
+            label,
+          }],
+        }).catch(() => {});
+      }
+
+      renderScoreboard();
+      renderHistory();
+    } else {
+      // Condition not met — mark as triggered anyway since one-time rules shouldn't wait
+      // (host added it but condition wasn't met — show a toast)
+      showToastMsg('⚠️ One-time aid condition not met — rule saved but not applied.');
+    }
+  }
 
   // 🌿 Green Certification — if Verdantia is one of the parties,
   // auto-add a −3 Pollution/round rule to the NON-Verdantia nation
@@ -19961,13 +20327,10 @@ async function confirmReset() {
   cityRules = buildDefaultCityRules();
 
   // ── Reset nation cards ──
-  cityCardPicks = {};
-  _nationCardPhase = {};
   window._summitIsActive = false;
   window._summitUsedNations = new Set();
   _updateSummitButtonStates();
   if (typeof _condAlertedKeys !== 'undefined') _condAlertedKeys.clear();
-  try { localStorage.removeItem(CARD_PICKS_SK); } catch {}
 
   // ── Reset events ──
   globalEvents   = JSON.parse(JSON.stringify(GLOBAL_EVENTS));
@@ -20001,24 +20364,54 @@ async function confirmReset() {
   // ── Reset policy cards + used tracking ──
   CITIES.forEach(c => { policyPicks[c.id] = null; });
   usedPolicyCards = new Set();
+  policyPicks     = {};           // clear fully (not just null values)
+  CITIES.forEach(c => { policyPicks[c.id] = null; }); // re-init keys
   if (window._immunityUsed) window._immunityUsed = {};
   savePolicyPicks();
   try { localStorage.removeItem(CUSTOM_POLICY_SK); } catch {}
   // Reset any card edits back to defaults
   Object.keys(POLICY_CARDS).forEach(cityId => {
-    POLICY_CARDS[cityId].forEach(card => { delete card._edited; });
+    POLICY_CARDS[cityId].forEach(card => {
+      delete card._edited;
+      delete card.selected;
+      delete card.eliminated;
+    });
   });
+
+  // ── Reset nation card picks and phase state ──
+  cityCardPicks    = {};
+  _nationCardPhase = {};
+  try { localStorage.removeItem(CARD_PICKS_SK); } catch {}
+
+  // ── Reset people trade state ──
+  tradeItemsA = [{ resourceId: RESOURCES.find(r=>r.id!=='pollution')?.id || RESOURCES[0].id, amount: 10 }];
+  tradeItemsB = [];
 
   // ── Nuke all localStorage keys ──
   const allKeys = [
     SK, SNAP_SK, ROUND_DESC_SK, ROUND_NOTES_SK, RULES_SK, ROUND_SK,
     GLOBAL_EVENTS_KEY, CITY_EVENTS_KEY, GLOBAL_ENABLED_KEY, CITY_ENABLED_KEY,
     DRAFT_SK, POLITICAL_SK, POLICY_SK, USED_POLICY_SK, RELATIONS_SK, WAR_SK,
-    CARD_PICKS_SK
+    CARD_PICKS_SK, POL_HISTORY_SK, CUSTOM_POLICY_SK,
   ];
   for (const key of allKeys) {
     try { localStorage.removeItem(key); } catch {}
     try { await window.storage?.delete(key); } catch {}
+  }
+
+  // ── Clear Firebase event nodes so viewers don't see stale popups ──
+  if (_fbDB && window._fb && window._fb.code) {
+    const evNodes = [
+      'gameEvent','gameEventApplied','eventChoiceResponse','eventChoiceConfirmed',
+      'allianceEnacted','summitActive','summitUsedNations','summit','summitTimer','summitEnded','summitOutcomes',
+      'warSession','postWarAidAvailable','aidRequests','aidResponses',
+      'policyCardUsed','policyTradeProposal','policyTradeDenied','policyTradeResult',
+      'mayorTradeOffer','mayorTradeResponse','roundTimer','tradeEnacted','gameEnded',
+      'taxManiacTarget','nationCardPickingOpen','nationCardChoices',
+    ];
+    evNodes.forEach(node => {
+      try { _fbDB.ref('games/'+window._fb.code+'/events/'+node).remove(); } catch {}
+    });
   }
 
   // ── Re-render everything ──
