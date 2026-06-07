@@ -491,56 +491,51 @@ nav{backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-bottom:
 #hscroll-track .ncard{flex:0 0 300px;min-width:0;}
 
 /* ── PROGRAM PHASES ── */
-.phases{padding:100px 0;position:relative;z-index:1;background:linear-gradient(180deg,transparent,rgba(59,130,246,0.012) 50%,transparent);}
-.phases-hd{text-align:center;max-width:660px;margin:0 auto 56px;}
-.phases-hd .eye{justify-content:center;}.phases-hd .eye::after{display:none;}
-.ph-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:32px;}
-.ph-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px 22px;position:relative;overflow:hidden;transition:all 0.35s;}
-.ph-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold),var(--gold-lt));opacity:0.35;transition:opacity 0.3s;}
-.ph-card:hover{border-color:rgba(219,166,66,0.25);transform:translateY(-5px);box-shadow:0 16px 40px -16px rgba(219,166,66,0.2);}
+.phases{padding:80px 0;position:relative;z-index:1;}
+.ph-hdr{text-align:center;max-width:560px;margin:0 auto 44px;}
+.ph-hdr .eye{justify-content:center;}.ph-hdr .eye::after{display:none;}
+.ph-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px;}
+.ph-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px 18px;position:relative;overflow:hidden;transition:all 0.35s;will-change:transform,opacity;}
+.ph-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold),var(--gold-lt));opacity:0.28;transition:opacity 0.3s;}
+.ph-card:hover{border-color:rgba(219,166,66,0.3);transform:translateY(-6px);box-shadow:0 18px 40px -14px rgba(219,166,66,0.18);}
 .ph-card:hover::before{opacity:1;}
-.ph-num{font-family:'Space Mono',monospace;font-size:0.55rem;letter-spacing:0.22em;color:var(--gold);text-transform:uppercase;margin-bottom:12px;opacity:0.7;}
-.ph-icon{font-size:2rem;margin-bottom:10px;}
-.ph-title{font-family:'Syne',sans-serif;font-weight:700;font-size:0.92rem;color:var(--ink);margin-bottom:10px;}
-.ph-desc{font-size:0.79rem;color:var(--sub);line-height:1.75;}
-.ph-note{display:flex;align-items:center;gap:12px;background:var(--gold-dim);border:1px solid rgba(219,166,66,0.14);border-radius:10px;padding:14px 22px;font-size:0.82rem;color:rgba(237,240,250,0.62);line-height:1.6;}
-.ph-note-icon{font-size:1.1rem;flex-shrink:0;}
+.ph-num{font-family:'Space Mono',monospace;font-size:0.5rem;letter-spacing:0.22em;color:var(--gold);text-transform:uppercase;margin-bottom:10px;opacity:0.65;}
+.ph-icon{font-size:1.7rem;margin-bottom:8px;}
+.ph-title{font-family:'Syne',sans-serif;font-weight:700;font-size:0.88rem;color:var(--ink);margin-bottom:7px;}
+.ph-desc{font-size:0.77rem;color:var(--sub);line-height:1.7;}
+.ph-footer{display:flex;align-items:center;gap:10px;background:var(--gold-dim);border:1px solid rgba(219,166,66,0.14);border-radius:10px;padding:12px 20px;font-size:0.8rem;color:rgba(237,240,250,0.58);line-height:1.5;}
 
 /* ── VISION / IMPACT ── */
-.vision-sec{padding:100px 0;position:relative;z-index:1;background:var(--bg2);border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
-.vis-grid{display:grid;grid-template-columns:5fr 4fr;gap:80px;align-items:start;}
-.vis-pillars{margin-top:36px;display:flex;flex-direction:column;gap:20px;}
-.vis-p{display:flex;align-items:flex-start;gap:16px;padding:18px 20px;background:var(--surface);border:1px solid var(--border);border-radius:10px;transition:all 0.25s;}
-.vis-p:hover{border-color:rgba(219,166,66,0.18);transform:translateX(4px);}
-.vis-p-icon{font-size:1.6rem;flex-shrink:0;margin-top:2px;}
-.vis-p-title{font-family:'Syne',sans-serif;font-weight:700;font-size:0.88rem;color:var(--ink);margin-bottom:6px;}
-.vis-p-desc{font-size:0.79rem;color:var(--sub);line-height:1.7;}
-.vis-stat-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px 28px;position:sticky;top:80px;}
-.vsc-label{font-family:'Space Mono',monospace;font-size:0.55rem;letter-spacing:0.2em;color:var(--gold);text-transform:uppercase;margin-bottom:4px;}
-.vsc-date{font-family:'Syne',sans-serif;font-weight:700;font-size:0.92rem;color:var(--ink);margin-bottom:24px;}
-.vsc-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px;}
-.vsc-item{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 12px;text-align:center;}
-.vsc-val{font-family:'Syne',sans-serif;font-weight:800;font-size:1.4rem;color:var(--gold);line-height:1;margin-bottom:4px;}
-.vsc-key{font-family:'Space Mono',monospace;font-size:0.48rem;letter-spacing:0.06em;color:var(--sub);text-transform:uppercase;line-height:1.4;}
-.vsc-skills{border-top:1px solid var(--border);padding-top:18px;margin-top:4px;}
-.vsc-sl{font-family:'Space Mono',monospace;font-size:0.52rem;letter-spacing:0.14em;color:var(--sub);text-transform:uppercase;margin-bottom:10px;}
-.vsc-tags{display:flex;flex-wrap:wrap;gap:6px;}
-.vsc-tag{background:rgba(219,166,66,0.07);border:1px solid rgba(219,166,66,0.15);color:rgba(219,166,66,0.8);font-family:'Space Mono',monospace;font-size:0.5rem;padding:4px 10px;border-radius:100px;letter-spacing:0.06em;}
+.vision-sec{padding:80px 0;position:relative;z-index:1;background:var(--bg2);border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
+.vis-hd{text-align:center;max-width:560px;margin:0 auto 44px;}
+.vis-hd .eye{justify-content:center;}.vis-hd .eye::after{display:none;}
+.vis-stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:32px;}
+.vsr-item{background:var(--surface);padding:28px 14px;text-align:center;transition:background 0.2s;will-change:opacity;}
+.vsr-item:hover{background:var(--panel);}
+.vsr-val{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.5rem,3vw,2.4rem);color:var(--gold);line-height:1;margin-bottom:8px;}
+.vsr-key{font-family:'Space Mono',monospace;font-size:0.5rem;letter-spacing:0.1em;color:var(--sub);text-transform:uppercase;line-height:1.5;}
+.vis-pillars-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.vis-pillar{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 20px;display:flex;flex-direction:column;gap:8px;transition:all 0.25s;will-change:transform,opacity;}
+.vis-pillar:hover{border-color:rgba(219,166,66,0.22);transform:translateY(-4px);box-shadow:0 12px 32px -12px rgba(219,166,66,0.12);}
+.vis-pillar-icon{font-size:1.4rem;}
+.vis-pillar-title{font-family:'Syne',sans-serif;font-weight:700;font-size:0.86rem;color:var(--ink);}
+.vis-pillar-desc{font-size:0.77rem;color:var(--sub);line-height:1.65;}
+.vis-sub{font-family:'Space Mono',monospace;font-size:0.5rem;letter-spacing:0.14em;color:var(--muted);text-transform:uppercase;text-align:center;margin-top:18px;}
 
 /* ── SETUP / TECH ── */
-.setup-sec{padding:100px 0;position:relative;z-index:1;}
-.setup-hd{text-align:center;max-width:660px;margin:0 auto 56px;}
+.setup-sec{padding:80px 0;position:relative;z-index:1;}
+.setup-hd{text-align:center;max-width:560px;margin:0 auto 44px;}
 .setup-hd .eye{justify-content:center;}.setup-hd .eye::after{display:none;}
-.setup-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
-.setup-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px 22px;display:flex;flex-direction:column;gap:10px;transition:all 0.3s;}
-.setup-card:hover{border-color:rgba(219,166,66,0.2);transform:translateY(-5px);box-shadow:0 16px 40px -16px rgba(219,166,66,0.15);}
-.setup-icon{font-size:2rem;}
-.setup-title{font-family:'Syne',sans-serif;font-weight:700;font-size:0.92rem;color:var(--ink);}
-.setup-desc{font-size:0.79rem;color:var(--sub);line-height:1.75;flex:1;}
-.setup-note{font-family:'Space Mono',monospace;font-size:0.56rem;letter-spacing:0.06em;color:rgba(219,166,66,0.6);padding:8px 12px;background:var(--gold-dim);border:1px solid rgba(219,166,66,0.1);border-radius:6px;line-height:1.5;}
+.setup-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.setup-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px 18px;display:flex;flex-direction:column;gap:8px;transition:all 0.3s;will-change:transform,opacity;}
+.setup-card:hover{border-color:rgba(219,166,66,0.22);transform:translateY(-5px);box-shadow:0 16px 36px -14px rgba(219,166,66,0.14);}
+.setup-icon{font-size:1.7rem;}
+.setup-title{font-family:'Syne',sans-serif;font-weight:700;font-size:0.88rem;color:var(--ink);}
+.setup-desc{font-size:0.77rem;color:var(--sub);line-height:1.7;flex:1;}
+.setup-tag{font-family:'Space Mono',monospace;font-size:0.5rem;letter-spacing:0.06em;color:rgba(219,166,66,0.55);margin-top:2px;}
 
-@media(max-width:900px){.ph-grid{grid-template-columns:1fr 1fr}.vis-grid{grid-template-columns:1fr;gap:40px}.setup-grid{grid-template-columns:1fr 1fr}}
-@media(max-width:600px){.ph-grid{grid-template-columns:1fr}.setup-grid{grid-template-columns:1fr}}
+@media(max-width:900px){.ph-grid{grid-template-columns:1fr 1fr}.vis-stats-row{grid-template-columns:1fr 1fr}.vis-pillars-row{grid-template-columns:1fr}.setup-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.ph-grid{grid-template-columns:1fr}.vis-stats-row{grid-template-columns:1fr 1fr}.setup-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -1353,52 +1348,50 @@ nav{backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-bottom:
 <!-- PROGRAM PHASES -->
 <section id="phases" class="phases" data-section="home">
   <div class="wrap">
-    <div class="phases-hd">
-      <div class="eye rev">How It Works</div>
-      <h2 class="sh rev d1">A 5-Phase <em>Journey</em></h2>
-      <p class="sp rev d2">From classroom to competition, SimCivic follows a structured five-phase arc — each phase building on the last, creating an immersive real-world governance simulation that can run in a single day or across multiple sessions.</p>
+    <div class="ph-hdr">
+      <div class="eye">How It Works</div>
+      <h2 class="sh">A 5-Phase <em>Journey</em></h2>
     </div>
     <div class="ph-grid">
-      <div class="ph-card rev">
+      <div class="ph-card">
         <div class="ph-num">Prep</div>
         <div class="ph-icon">📋</div>
         <div class="ph-title">Preparation</div>
-        <div class="ph-desc">Optional skill-building phase where participants learn foundational concepts — civic governance, resource management, negotiation tactics, and presentation skills — to make the activity run smoothly.</div>
+        <div class="ph-desc">Optional skill-building — civic governance, negotiation tactics, and presentation basics to hit the ground running.</div>
       </div>
-      <div class="ph-card rev d1">
+      <div class="ph-card">
         <div class="ph-num">Phase 01</div>
         <div class="ph-icon">🗺️</div>
         <div class="ph-title">Nation Planning</div>
-        <div class="ph-desc">Teams are assigned their nations, study their starting resources, and begin crafting strategies. Roles are distributed, and each team drafts an initial governance plan and sets the vision for their territory.</div>
+        <div class="ph-desc">Teams receive their nations, assign roles, and draft an opening strategy before the first round begins.</div>
       </div>
-      <div class="ph-card rev d2">
+      <div class="ph-card">
         <div class="ph-num">Phase 02</div>
         <div class="ph-icon">🤝</div>
         <div class="ph-title">Rounds &amp; Diplomacy</div>
-        <div class="ph-desc">The heart of SimCivic. Nations enact policy cards, negotiate trades, form alliances, call global summits, and navigate real-time crises — all tracked live on the interactive scoreboard across multiple rounds.</div>
+        <div class="ph-desc">Enact policies, negotiate trades, form alliances, and navigate real-time crises — all tracked live on the scoreboard.</div>
       </div>
-      <div class="ph-card rev d3">
+      <div class="ph-card">
         <div class="ph-num">Phase 03</div>
         <div class="ph-icon">🏗️</div>
         <div class="ph-title">City Building</div>
-        <div class="ph-desc">Nations sketch their city layouts on territory maps — considering deserts, bodies of water, and fertile land — then purchase building materials to construct 3D models of their infrastructure using popsicle sticks, tape, and pipe cleaners.</div>
+        <div class="ph-desc">Sketch city layouts on territory maps, then physically build 3D models using craft materials — scored by judges.</div>
       </div>
-      <div class="ph-card rev d4">
+      <div class="ph-card">
         <div class="ph-num">Phase 04</div>
         <div class="ph-icon">🎯</div>
         <div class="ph-title">Presentation Prep</div>
-        <div class="ph-desc">Nations compile their final case: documenting diplomatic decisions, resource management strategies, alliance choices, and proposed solutions to their territory's real-world challenges (flooding, pollution, food security, etc.).</div>
+        <div class="ph-desc">Compile your nation's case — decisions made, strategies used, and real-world solutions to your territory's challenges.</div>
       </div>
-      <div class="ph-card rev d4">
+      <div class="ph-card">
         <div class="ph-num">Phase 05</div>
         <div class="ph-icon">🏆</div>
         <div class="ph-title">Final Presentations</div>
-        <div class="ph-desc">Teams present to a panel of judges — community members and industry experts. Judges award Innovation Points that can shift the final leaderboard. The highest-scoring nation is crowned the winner.</div>
+        <div class="ph-desc">Present to industry experts and community judges. Innovation Points can flip the leaderboard. One nation wins.</div>
       </div>
     </div>
-    <div class="ph-note rev">
-      <span class="ph-note-icon">⏱️</span>
-      <span><strong style="color:var(--gold)">Flexible timeline:</strong> Can run in a single 5–6 hour session or spread across multiple days. The pilot ran as an 8 AM–2 PM event at Stonewall Elementary — phases 2 and 3 naturally overlapped. Multi-session formats give students more time for thoughtful negotiation and decision-making.</span>
+    <div class="ph-footer">
+      ⏱️&nbsp; <strong style="color:var(--gold)">Flexible timeline</strong> — runs in a single 5–6 hour session or across multiple days. Phases 2 and 3 naturally overlap.
     </div>
   </div>
 </section>
@@ -1406,70 +1399,46 @@ nav{backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-bottom:
 <!-- VISION & IMPACT -->
 <section class="vision-sec" data-section="home">
   <div class="wrap">
-    <div class="vis-grid">
-      <div class="vis-left">
-        <div class="eye rev">Program Vision</div>
-        <h2 class="sh rev d1">Built for <em>Every</em> Classroom</h2>
-        <p class="sp rev d2">SimCivic is designed for adaptability and scalable implementation across a wide range of educational settings — from elementary school through high school, from a single class period to a multi-day event.</p>
-        <div class="vis-pillars">
-          <div class="vis-p rev d1">
-            <div class="vis-p-icon">🎓</div>
-            <div>
-              <div class="vis-p-title">Adaptable by Design</div>
-              <div class="vis-p-desc">Resources, roles, rules, and territories can be adjusted to match any age group, grade level, and instructional goals — supporting foundational civic skills for younger students and advanced critical thinking for older ones.</div>
-            </div>
-          </div>
-          <div class="vis-p rev d2">
-            <div class="vis-p-icon">📈</div>
-            <div>
-              <div class="vis-p-title">Scalable Impact</div>
-              <div class="vis-p-desc">SimCivic can be delivered in classrooms, cafeterias, gyms, libraries, or community centers — and can integrate with after-school programs, the YMCA, Boys &amp; Girls Club, or school-sponsored clubs.</div>
-            </div>
-          </div>
-          <div class="vis-p rev d3">
-            <div class="vis-p-icon">🌐</div>
-            <div>
-              <div class="vis-p-title">Real-World Ready</div>
-              <div class="vis-p-desc">Beyond academic content, SimCivic builds perseverance, communication, civic responsibility, ethical decision-making, and the ability to collaborate under high-pressure, real-time conditions.</div>
-            </div>
-          </div>
-        </div>
+    <div class="vis-hd">
+      <div class="eye">By the Numbers</div>
+      <h2 class="sh">Proven <em>Results</em></h2>
+    </div>
+    <div class="vis-stats-row">
+      <div class="vsr-item">
+        <div class="vsr-val" data-target="97" data-suffix="%">97%</div>
+        <div class="vsr-key">Increased Engagement</div>
       </div>
-      <div class="vis-right rev d2">
-        <div class="vis-stat-card">
-          <div class="vsc-label">Pilot Session Results</div>
-          <div class="vsc-date">Stonewall Elementary — April 22, 2026</div>
-          <div class="vsc-grid">
-            <div class="vsc-item">
-              <div class="vsc-val">97%</div>
-              <div class="vsc-key">Increased Engagement</div>
-            </div>
-            <div class="vsc-item">
-              <div class="vsc-val">93%</div>
-              <div class="vsc-key">Would Do It Again</div>
-            </div>
-            <div class="vsc-item">
-              <div class="vsc-val">4.2/5</div>
-              <div class="vsc-key">Avg. Enjoyment Rating</div>
-            </div>
-            <div class="vsc-item">
-              <div class="vsc-val">70%</div>
-              <div class="vsc-key">Wanted After-School Club</div>
-            </div>
-          </div>
-          <div class="vsc-skills">
-            <div class="vsc-sl">Observed Student Growth</div>
-            <div class="vsc-tags">
-              <span class="vsc-tag">Critical Thinking</span>
-              <span class="vsc-tag">Communication</span>
-              <span class="vsc-tag">Civic Understanding</span>
-              <span class="vsc-tag">Collaboration</span>
-              <span class="vsc-tag">Decision-Making Under Pressure</span>
-            </div>
-          </div>
-        </div>
+      <div class="vsr-item">
+        <div class="vsr-val" data-target="93" data-suffix="%">93%</div>
+        <div class="vsr-key">Would Do It Again</div>
+      </div>
+      <div class="vsr-item">
+        <div class="vsr-val" data-target="4.2" data-suffix="/5">4.2/5</div>
+        <div class="vsr-key">Avg. Enjoyment Rating</div>
+      </div>
+      <div class="vsr-item">
+        <div class="vsr-val" data-target="70" data-suffix="%">70%</div>
+        <div class="vsr-key">Wanted After-School Club</div>
       </div>
     </div>
+    <div class="vis-pillars-row">
+      <div class="vis-pillar">
+        <div class="vis-pillar-icon">🎓</div>
+        <div class="vis-pillar-title">Adaptable by Design</div>
+        <div class="vis-pillar-desc">Adjustable for any grade, age group, and instructional goal — from elementary through high school.</div>
+      </div>
+      <div class="vis-pillar">
+        <div class="vis-pillar-icon">📈</div>
+        <div class="vis-pillar-title">Scalable Impact</div>
+        <div class="vis-pillar-desc">Runs in gyms, cafeterias, and community centers. Integrates with after-school programs and school clubs.</div>
+      </div>
+      <div class="vis-pillar">
+        <div class="vis-pillar-icon">🌐</div>
+        <div class="vis-pillar-title">Real-World Skills</div>
+        <div class="vis-pillar-desc">Builds communication, civic responsibility, and decision-making under real pressure — skills that last.</div>
+      </div>
+    </div>
+    <div class="vis-sub">Pilot — Stonewall Elementary · April 22, 2026 · 33 fifth-grade students</div>
   </div>
 </section>
 
@@ -1477,46 +1446,45 @@ nav{backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-bottom:
 <section class="setup-sec" data-section="home">
   <div class="wrap">
     <div class="setup-hd">
-      <div class="eye rev">What You'll Need</div>
-      <h2 class="sh rev d1">Technology &amp; <em>Setup</em></h2>
-      <p class="sp rev d2">SimCivic is designed to run in a large open setting — cafeteria, gym, library, or community center — with a flexible tech setup that makes the simulation immersive, manageable, and engaging.</p>
+      <div class="eye">What You'll Need</div>
+      <h2 class="sh">Technology &amp; <em>Setup</em></h2>
     </div>
     <div class="setup-grid">
-      <div class="setup-card rev">
+      <div class="setup-card">
         <div class="setup-icon">🖥️</div>
         <div class="setup-title">2 Large Monitors</div>
-        <div class="setup-desc">The first monitor serves as the host's comprehensive dashboard — manually enacting changes and maintaining a full activity overview. The second hosts a live shared negotiation sheet where nations schedule official trade meetings.</div>
-        <div class="setup-note">★ Large touch-screen monitors are usually already available at schools</div>
+        <div class="setup-desc">One for the host dashboard, one for the live shared negotiation sheet where nations schedule trade meetings.</div>
+        <div class="setup-tag">★ Touch screens usually available at schools</div>
       </div>
-      <div class="setup-card rev d1">
+      <div class="setup-card">
         <div class="setup-icon">📱</div>
-        <div class="setup-title">5 iPads (Ideal Setup)</div>
-        <div class="setup-desc">One per nation — each iPad is the team's live dashboard to monitor resources, receive trade notifications, call global summits, enact policy and nation cards, and manage gameplay in real time from their territory.</div>
-        <div class="setup-note">★ The pilot ran successfully with 2 monitors alone. iPads elevate immersion.</div>
+        <div class="setup-title">5 iPads</div>
+        <div class="setup-desc">One per nation — live dashboard for resources, trade alerts, global summits, and policy cards in real time.</div>
+        <div class="setup-tag">★ Pilot ran successfully with just 2 monitors</div>
       </div>
-      <div class="setup-card rev d2">
+      <div class="setup-card">
         <div class="setup-icon">💻</div>
         <div class="setup-title">2–3 Chromebooks</div>
-        <div class="setup-desc">One serves as the paid "research station" where nations spend Capital to look up real-world solutions to their territory's problems. Others serve as communication access points to the shared negotiation document.</div>
-        <div class="setup-note">Example: "How have cities fixed flooding?" · "Best negotiation tactics?" · "How to reduce pollution?"</div>
+        <div class="setup-desc">Research station (nations pay Capital to research solutions) + communication access to the negotiation doc.</div>
+        <div class="setup-tag">e.g. "How have cities fixed flooding?"</div>
       </div>
-      <div class="setup-card rev d3">
+      <div class="setup-card">
         <div class="setup-icon">🧱</div>
         <div class="setup-title">Building Materials</div>
-        <div class="setup-desc">Phase 3 transforms the room into a construction zone. Nations use popsicle sticks, tape, pipe cleaners, and similar craft materials to build 3D models of their cities on territory maps drawn on grid paper or blank canvas.</div>
-        <div class="setup-note">★ Each map incorporates geographic conditions — deserts, water bodies, terrain constraints</div>
+        <div class="setup-desc">Popsicle sticks, tape, pipe cleaners — used in Phase 3 to build 3D city models on territory maps.</div>
+        <div class="setup-tag">★ Grid paper or blank canvas serves as the map</div>
       </div>
-      <div class="setup-card rev d4">
+      <div class="setup-card">
         <div class="setup-icon">👥</div>
         <div class="setup-title">Facilitation Team</div>
-        <div class="setup-desc">Ideal setup: 1 game host + 5 nation facilitators (one per team). Each facilitator keeps their nation on task, encourages critical thinking, helps organize goals and mission, and bridges student communication with the host.</div>
-        <div class="setup-note">★ The game host can also serve as a facilitator, reducing staff to 4 + 1 host</div>
+        <div class="setup-desc">1 game host + 5 nation facilitators. Each keeps their team on task, encourages critical thinking, and bridges communication.</div>
+        <div class="setup-tag">★ Host can double as facilitator — 4+1 minimum</div>
       </div>
-      <div class="setup-card rev d4">
+      <div class="setup-card">
         <div class="setup-icon">🌐</div>
         <div class="setup-title">Live Scoreboard</div>
-        <div class="setup-desc">SimCivic's interactive web-based scoreboard tracks all 7 resources, live rankings, bilateral nation relations, alliance status, and global events in real time — accessible from any browser on any device via the shared domain.</div>
-        <div class="setup-note">★ Currently live at tr16cnguyen-dot.github.io/SimCivic/ · Built with Firebase real-time sync</div>
+        <div class="setup-desc">Web-based dashboard tracking all 7 resources, rankings, alliances, and global events — accessible from any device.</div>
+        <div class="setup-tag">★ Firebase real-time sync · GitHub Pages hosted</div>
       </div>
     </div>
   </div>
@@ -1611,7 +1579,7 @@ function showPage(n){
 }
 document.querySelectorAll('[data-page]').forEach(el=>{el.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();showPage(el.dataset.page);});});
 window.addEventListener('popstate',()=>showPage(location.hash.slice(1)||'home'));
-showPage(location.hash.slice(1)||'home');
+showPage('home'); // always open on the landing page
 
 // SCROLL PROGRESS (parallax handled by GSAP below)
 const pbar=document.getElementById('nav-progress');
@@ -2133,6 +2101,66 @@ ScrollTrigger.create({
       else{if(hst){hst.scrollTrigger&&hst.scrollTrigger.kill();hst.kill&&hst.kill();hst=null;}ScrollTrigger.refresh();}
     }).observe(nationsSec,{attributes:true,attributeFilter:['style']});
   }
+})();
+
+// ── FEATURE 13: NEW SECTION ANIMATIONS ────────────────────────────────────
+(function(){
+  if(typeof ScrollTrigger==='undefined'||typeof gsap==='undefined')return;
+
+  // PHASES — stagger cards up from below
+  ScrollTrigger.create({
+    trigger:'#phases',start:'top 84%',once:true,
+    onEnter(){
+      gsap.fromTo('#phases .ph-hdr .eye,#phases .ph-hdr .sh',
+        {opacity:0,y:20},{opacity:1,y:0,stagger:0.1,duration:0.55,ease:'power2.out'});
+      gsap.fromTo('#phases .ph-card',
+        {opacity:0,y:44,scale:0.96},
+        {opacity:1,y:0,scale:1,stagger:0.08,duration:0.65,delay:0.12,ease:'power3.out'});
+      gsap.fromTo('#phases .ph-footer',
+        {opacity:0,y:14},{opacity:1,y:0,duration:0.5,delay:0.62,ease:'power2.out'});
+    }
+  });
+
+  // VISION — header fades, stats row rises, pillar cards stagger, counters count up
+  ScrollTrigger.create({
+    trigger:'.vision-sec',start:'top 84%',once:true,
+    onEnter(){
+      gsap.fromTo('.vis-hd .eye,.vis-hd .sh',
+        {opacity:0,y:20},{opacity:1,y:0,stagger:0.1,duration:0.55,ease:'power2.out'});
+      gsap.fromTo('.vsr-item',
+        {opacity:0,y:34},{opacity:1,y:0,stagger:0.07,duration:0.6,delay:0.15,ease:'power3.out'});
+      gsap.fromTo('.vis-pillar',
+        {opacity:0,y:30,scale:0.95},
+        {opacity:1,y:0,scale:1,stagger:0.09,duration:0.6,delay:0.3,ease:'power3.out'});
+      gsap.fromTo('.vis-sub',
+        {opacity:0},{opacity:1,duration:0.5,delay:0.6,ease:'power2.out'});
+      // Counter animation on stat numbers
+      document.querySelectorAll('.vsr-val[data-target]').forEach(function(el,i){
+        var raw=el.dataset.target;
+        var isFloat=raw.indexOf('.')!==-1;
+        var target=parseFloat(raw);
+        var suffix=el.dataset.suffix||'%';
+        var obj={v:0};
+        gsap.to(obj,{v:target,duration:1.4,delay:0.2+i*0.07,ease:'power2.out',
+          onUpdate:function(){
+            el.textContent=(isFloat?obj.v.toFixed(1):Math.round(obj.v))+suffix;
+          }
+        });
+      });
+    }
+  });
+
+  // SETUP — header then cards stagger with slight scale
+  ScrollTrigger.create({
+    trigger:'.setup-sec',start:'top 84%',once:true,
+    onEnter(){
+      gsap.fromTo('.setup-hd .eye,.setup-hd .sh',
+        {opacity:0,y:20},{opacity:1,y:0,stagger:0.1,duration:0.55,ease:'power2.out'});
+      gsap.fromTo('.setup-card',
+        {opacity:0,y:38,scale:0.95},
+        {opacity:1,y:0,scale:1,stagger:0.08,duration:0.65,delay:0.14,ease:'power3.out'});
+    }
+  });
 })();
 
 // ── FEATURE 12: AMBIENT SOUND TOGGLE ──────────────────────────────────────
