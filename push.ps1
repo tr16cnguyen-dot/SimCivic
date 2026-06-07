@@ -15,7 +15,11 @@ $rawMsg = if ($args[0]) { $args[0] } else { "Update SimCivic dashboard $(Get-Dat
 $msg    = $rawMsg -replace '[\x00-\x1F\x7F]', ''   # strip control chars
 if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) }   # cap length
 
-git add index.html
+# Sync simcivic.html → index.html (GitHub Pages serves index.html as the root)
+if (Test-Path "$repo\simcivic.html") {
+    Copy-Item "$repo\simcivic.html" "$repo\index.html" -Force
+}
+git add index.html simcivic.html
 $status = git status --porcelain
 if (-not $status) {
     Write-Output "Nothing to commit - already up to date."
