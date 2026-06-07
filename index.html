@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.gstatic.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; connect-src https://*.firebaseio.com wss://*.firebaseio.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com; img-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self';">
+<meta http-equiv="X-Content-Type-Options" content="nosniff">
+<meta http-equiv="X-Frame-Options" content="SAMEORIGIN">
 
 <title>Nation Simulator Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600&family=Sora:wght@300;400;500;600&family=Bebas+Neue&family=Space+Mono:wght@400;700&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -4758,7 +4761,8 @@ window._fbShowViewerAidRequestButton = function(ev, code) {
   div.id = 'viewerAidRequestBtn';
   div.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:8000;text-align:center;white-space:nowrap;';
   var evStr = encodeURIComponent(JSON.stringify(ev));
-  div.innerHTML = '<button onclick="window._fbShowViewerAidUI(decodeURIComponent(\''+evStr+'\'),\''+code+'\')" style="padding:12px 28px;border-radius:12px;cursor:pointer;border:2px solid rgba(6,182,212,0.6);background:rgba(6,182,212,0.12);color:#22d3ee;font-family:Orbitron,sans-serif;font-size:0.72rem;font-weight:900;letter-spacing:1px;box-shadow:0 0 20px rgba(6,182,212,0.2);">🆘 REQUEST POST-WAR AID</button><div style="font-size:0.5rem;color:#334155;margin-top:4px;">Available for 1 round after losing war</div>';
+  var safeCode = _sanitizeCode(code);
+  div.innerHTML = '<button onclick="window._fbShowViewerAidUI(decodeURIComponent(\''+evStr+'\'),\''+safeCode+'\')" style="padding:12px 28px;border-radius:12px;cursor:pointer;border:2px solid rgba(6,182,212,0.6);background:rgba(6,182,212,0.12);color:#22d3ee;font-family:Orbitron,sans-serif;font-size:0.72rem;font-weight:900;letter-spacing:1px;box-shadow:0 0 20px rgba(6,182,212,0.2);">🆘 REQUEST POST-WAR AID</button><div style="font-size:0.5rem;color:#334155;margin-top:4px;">Available for 1 round after losing war</div>';
   document.body.appendChild(div);
 };
 
@@ -4777,9 +4781,10 @@ window._fbShowViewerAidUI = function(evStr, code) {
     var col = rel>=70?'#10b981':rel>=50?'#f59e0b':'#f97316';
     var tier = rel>=70?'Allied':rel>=50?'Friendly':'Neutral';
     var bonus = rel>=70?'+3%':rel>=50?'+2%':'+1%';
-    return '<div onclick="window._fbViewerSelectAidTarget(this,\''+nation.id+'\')" data-nation="'+nation.id+'" style="border:1px solid '+nation.color+'30;border-radius:10px;padding:10px 12px;cursor:pointer;background:'+nation.color+'06;display:flex;align-items:center;gap:10px;margin-bottom:6px;transition:all 0.15s;" onmouseover="this.style.background=\''+nation.color+'14\'" onmouseout="this.style.background=\''+nation.color+'06\'">'
-      +'<span style="font-size:1.3rem">'+nation.icon+'</span>'
-      +'<div style="flex:1"><div style="font-family:Orbitron,sans-serif;font-size:0.65rem;font-weight:800;color:'+nation.color+'">'+nation.name+'</div>'
+    var nc = _escAttr(nation.color), ni = _escHtml(nation.icon), nn = _escHtml(nation.name), nid = _escAttr(nation.id);
+    return '<div onclick="window._fbViewerSelectAidTarget(this,\''+nid+'\')" data-nation="'+nid+'" style="border:1px solid '+nc+'30;border-radius:10px;padding:10px 12px;cursor:pointer;background:'+nc+'06;display:flex;align-items:center;gap:10px;margin-bottom:6px;transition:all 0.15s;" onmouseover="this.style.background=\''+nc+'14\'" onmouseout="this.style.background=\''+nc+'06\'">'
+      +'<span style="font-size:1.3rem">'+ni+'</span>'
+      +'<div style="flex:1"><div style="font-family:Orbitron,sans-serif;font-size:0.65rem;font-weight:800;color:'+nc+'">'+nn+'</div>'
       +'<div style="font-size:0.52rem;color:'+col+'">'+tier+' — '+rel+'% &nbsp;|&nbsp; If they help: '+bonus+' relations</div></div>'
       +'<div id="aidSelIndicator_'+nation.id+'" style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,0.2)"></div></div>';
   }).join('') || '<div style="font-size:0.65rem;color:var(--text-muted);padding:10px;">No eligible nations (need relations ≥30%)</div>';
@@ -4790,7 +4795,7 @@ window._fbShowViewerAidUI = function(evStr, code) {
   div.innerHTML = '<div style="max-width:480px;width:100%;">'
     +'<div style="font-size:2.5rem;text-align:center;margin-bottom:12px">🆘</div>'
     +'<div style="font-family:Orbitron,sans-serif;font-size:0.9rem;font-weight:900;color:#22d3ee;letter-spacing:3px;text-align:center;margin-bottom:4px;">REQUEST POST-WAR AID</div>'
-    +'<div style="font-size:0.62rem;color:rgba(255,255,255,0.4);text-align:center;margin-bottom:20px;">'+myNat.icon+' <strong style="color:'+myNat.color+'">'+myNat.name+'</strong> — select a nation to ask for help</div>'
+    +'<div style="font-size:0.62rem;color:rgba(255,255,255,0.4);text-align:center;margin-bottom:20px;">'+_escHtml(myNat.icon)+' <strong style="color:'+_escAttr(myNat.color)+'">'+_escHtml(myNat.name)+'</strong> — select a nation to ask for help</div>'
     +'<div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">'
       +'<div style="flex:1;min-width:140px"><div style="font-size:0.55rem;color:var(--text-muted);margin-bottom:4px">Resource to request</div>'
       +'<select id="viewerAidResource" style="width:100%;padding:6px 8px;border-radius:7px;border:1px solid rgba(255,255,255,0.15);background:#0d1117;color:#e2e8f0;font-size:0.62rem;">'
@@ -4799,7 +4804,7 @@ window._fbShowViewerAidUI = function(evStr, code) {
       +'<input id="viewerAidAmount" type="number" value="5" min="1" max="30" style="width:100%;padding:6px 8px;border-radius:7px;border:1px solid rgba(255,255,255,0.15);background:#0d1117;color:#e2e8f0;font-size:0.62rem;box-sizing:border-box;"></div></div>'
     +'<div style="margin-bottom:16px">'+nationsHtml+'</div>'
     +'<div id="viewerAidSendWrap" style="display:none;margin-bottom:12px;">'
-      +'<button onclick="window._fbViewerSendAidRequest(\''+code+'\',\''+ev.loserId+'\',\''+myNat.name+'\',\''+myNat.icon+'\')" style="width:100%;padding:13px;border-radius:10px;cursor:pointer;border:2px solid rgba(6,182,212,0.5);background:rgba(6,182,212,0.12);color:#22d3ee;font-family:Orbitron,sans-serif;font-size:0.72rem;font-weight:900;letter-spacing:2px;">📤 SEND AID REQUEST</button></div>'
+      +'<button onclick="window._fbViewerSendAidRequest(\''+_sanitizeCode(code)+'\',\''+_escAttr(ev.loserId)+'\',\''+_escAttr(myNat.name)+'\',\''+_escAttr(myNat.icon)+'\')" style="width:100%;padding:13px;border-radius:10px;cursor:pointer;border:2px solid rgba(6,182,212,0.5);background:rgba(6,182,212,0.12);color:#22d3ee;font-family:Orbitron,sans-serif;font-size:0.72rem;font-weight:900;letter-spacing:2px;">📤 SEND AID REQUEST</button></div>'
     +'<button onclick="document.getElementById(\'viewerAidUI\').remove()" style="width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:rgba(255,255,255,0.35);font-size:0.62rem;cursor:pointer;">Cancel</button>'
     +'</div>';
   document.body.appendChild(div);
@@ -7480,6 +7485,41 @@ window.fbToggleViewers = function() {
 </div>
 
 <script>
+// ════════════════════════════════════════════════════════
+// SECURITY HELPERS
+// ════════════════════════════════════════════════════════
+
+/** Escape a value for safe embedding inside an HTML attribute (e.g. onclick="..."). */
+function _escAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,  '&amp;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#39;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/\\/g, '&#92;');
+}
+
+/** Escape a value for safe embedding in an HTML text node via innerHTML. */
+function _escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Validate & sanitize a game code.
+ * Game codes must be 4–10 uppercase alphanumeric characters.
+ * Returns the sanitized code, or '' if invalid.
+ */
+function _sanitizeCode(code) {
+  var s = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return s.length >= 4 && s.length <= 10 ? s : '';
+}
+
 // ════════════════════════════════════════════════════════
 // DATA
 // ════════════════════════════════════════════════════════
@@ -18117,6 +18157,7 @@ function showCityPicker(playerName, anchorEl) {
     if (!urls.length) { onFail(); return; }
     var s = document.createElement('script');
     s.src = urls[0];
+    s.crossOrigin = 'anonymous';
     s.onload = onSuccess;
     s.onerror = function() { loadScript(urls.slice(1), onSuccess, onFail); };
     document.body.appendChild(s);
